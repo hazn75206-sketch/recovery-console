@@ -113,6 +113,7 @@ var runId = null;
 var pollTimer = null;
 var triggerTime = 0;
 var lastParts = 1;
+var uploadedName = null;
 
 function $(id) { return document.getElementById(id); }
 
@@ -151,8 +152,12 @@ function ensureBranch() {
 }
 
 // Branch inbox hanya menyimpan satu file: hapus sisa upload sebelumnya.
+// Branch kosong dibaca GitHub sebagai 404, itu normal, bukan error.
 function cleanInbox(keepName) {
-  return api("GET", "/contents/?ref=" + INBOX_BRANCH).then(function (items) {
+  return api("GET", "/contents/?ref=" + INBOX_BRANCH).catch(function (e) {
+    if (e.code === 404) { return []; }
+    throw e;
+  }).then(function (items) {
     var dels = (Array.isArray(items) ? items : []).filter(function (it) {
       return it.type === "file" && it.name !== keepName;
     }).map(function (it) {
@@ -168,7 +173,7 @@ function putFile(name, b64) {
   return new Promise(function (resolve, reject) {
     var xhr = new XMLHttpRequest();
     xhr.open("PUT", "https://api.github.com/repos/" + OWNER + "/" + REPO +
-      "/contents/" + encodeURIComponent(name) + "?ref=" + INBOX_BRANCH);
+      "/contents/" + encodeURIComponent(name));
     xhr.setRequestHeader("Accept", "application/vnd.github+json");
     xhr.setRequestHeader("Authorization", "Bearer " + token());
     xhr.setRequestHeader("X-GitHub-Api-Version", "2022-11-28");
@@ -227,6 +232,7 @@ function baseName(name) {
 
 $("file").addEventListener("change", function () {
   var f = $("file").files[0];
+  uploadedName = null;
   $("fileInfo").textContent = f
     ? "Dipilih: " + f.name + " (" + Math.round(f.size / 1048576) + " MB)"
     : "Belum ada file dipilih.";
@@ -253,6 +259,7 @@ $("btnUpload").addEventListener("click", function () {
     })
     .then(function (parts) {
       lastParts = parts;
+      uploadedName = name;
       var extra = parts > 1 ? " (" + parts + " bagian)" : "";
       setStatus('<span class="ok">Upload selesai:</span> ' + name + extra + ". Lanjut tekan Jalankan recovery.");
     })
@@ -269,6 +276,10 @@ $("btnRun").addEventListener("click", function () {
     return;
   }
   var name = baseName(f.name);
+  if (uploadedName !== name) {
+    setStatus('<span class="err">File belum diupload.</span> Tekan Upload file sampai muncul tulisan selesai.');
+    return;
+  }
   triggerTime = Date.now();
   setStatus("Memerintah runner...");
   api("POST", "/actions/workflows/" + WORKFLOW + "/dispatches", {
