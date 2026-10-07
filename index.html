@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Recovery Console</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0;
+    background: #161a1f;
+    color: #e8eaed;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+  }
+  main { max-width: 560px; margin: 0 auto; padding: 20px 16px 48px; }
+  h1 { font-size: 22px; margin: 8px 0 4px; }
+  .sub { color: #b9bec6; margin: 0 0 20px; font-size: 14px; }
+  section { border: 1px solid #2c333c; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  label { display: block; font-size: 14px; margin: 10px 0 4px; }
+  input[type="text"], input[type="password"], input[type="file"] {
+    width: 100%; box-sizing: border-box;
+    background: #0f1216; color: #e8eaed;
+    border: 1px solid #3a424c; border-radius: 8px;
+    padding: 12px; font-size: 16px;
+  }
+  input:focus-visible, button:focus-visible, a:focus-visible {
+    outline: 2px solid #e0a100; outline-offset: 2px;
+  }
+  .row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+  button {
+    flex: 1 1 140px; min-height: 48px;
+    border-radius: 10px; border: 1px solid #3a424c;
+    background: #22282f; color: #e8eaed; font-size: 16px;
+  }
+  button:active { background: #2c333c; }
+  button:disabled { opacity: 0.45; }
+  button.primary { background: #e0a100; border-color: #e0a100; color: #161a1f; font-weight: 600; }
+  button.primary:active { background: #c78e00; }
+  .hint { font-size: 13px; color: #b9bec6; margin: 6px 0 0; }
+  .check { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 14px; }
+  .check input { width: 20px; height: 20px; }
+  #statusBox { font-size: 15px; }
+  #statusBox .bar { height: 8px; background: #0f1216; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+  #statusBox .bar > div { height: 100%; width: 0%; background: #e0a100; }
+  #resultBox a {
+    display: block; text-align: center; text-decoration: none;
+    background: #6fbf8f; color: #10130f; font-weight: 600;
+    border-radius: 10px; padding: 14px; min-height: 24px; margin-top: 10px;
+  }
+  .err { color: #e06c5b; }
+  .ok { color: #6fbf8f; }
+  .warn { color: #e0a100; }
+  footer { font-size: 13px; color: #b9bec6; margin-top: 18px; }
+  footer a { color: #e8eaed; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Recovery Console</h1>
+  <p class="sub">Kirim file game ke runner Windows GitHub, pantau recovery, download hasilnya.</p>
+
+  <section aria-labelledby="h-token">
+    <h2 id="h-token">1. Token GitHub</h2>
+    <label for="token">Token (butuh akses repo gdsdecomp)</label>
+    <input type="password" id="token" autocomplete="off" placeholder="Tempel token di sini">
+    <div class="check">
+      <input type="checkbox" id="remember">
+      <label for="remember" style="margin:0">Ingat token di HP ini</label>
+    </div>
+    <p class="hint">Tanpa dicentang, token hanya dipakai selama halaman terbuka.</p>
+  </section>
+
+  <section aria-labelledby="h-file">
+    <h2 id="h-file">2. File game</h2>
+    <label for="file">Pilih file pck, exe, apk, atau zip</label>
+    <input type="file" id="file" accept=".pck,.exe,.apk,.zip">
+    <p class="hint" id="fileInfo">Belum ada file dipilih.</p>
+    <label for="key">Key enkripsi, 64-char hex (opsional, tidak disimpan)</label>
+    <input type="text" id="key" autocomplete="off" inputmode="latin" placeholder="Kosongkan kalau game tidak dienkripsi">
+  </section>
+
+  <section aria-labelledby="h-aksi">
+    <h2 id="h-aksi">3. Aksi</h2>
+    <div class="row">
+      <button type="button" id="btnUpload">Upload file</button>
+      <button type="button" id="btnRun" class="primary">Jalankan recovery</button>
+      <button type="button" id="btnCancel" disabled>Batalkan</button>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-status">
+    <h2 id="h-status">4. Status</h2>
+    <div id="statusBox" aria-live="polite">Menunggu. Upload file dulu, lalu jalankan recovery.</div>
+  </section>
+
+  <section aria-labelledby="h-hasil">
+    <h2 id="h-hasil">5. Hasil</h2>
+    <div id="resultBox">Link download muncul di sini setelah recovery hijau.</div>
+  </section>
+
+  <footer>
+    Repo: <a href="https://github.com/hazn75206-sketch/gdsdecomp">hazn75206-sketch/gdsdecomp</a>.
+    Hasil berupa satu zip (project + log) dari halaman Release, tanpa lapisan zip ganda.
+  </footer>
+</main>
+
+<script>
+"use strict";
+// Target tetap: repo dan workflow milik sendiri, supaya tidak salah tembak.
+var OWNER = "hazn75206-sketch";
+var REPO = "gdsdecomp";
+var WORKFLOW = "recover-official.yml";
+var REF = "master";
+var INBOX_BRANCH = "pck-inbox";
+var RESULT_TAG = "hasil-recovery";
+var POLL_MS = 15000;
+
+var runId = null;
+var pollTimer = null;
+var triggerTime = 0;
+
+function $(id) { return document.getElementById(id); }
+
+function setStatus(html) { $("statusBox").innerHTML = html; }
+
+function token() {
+  var t = $("token").value.trim();
+  if (!t) { setStatus('<span class="err">Token kosong.</span> Tempel token dulu.'); }
+  return t;
+}
+
+// Bungkus API GitHub. Token salah atau kadaluarsa langsung dijelaskan di sini.
+function api(method, path, body) {
+  return fetch("https://api.github.com/repos/" + OWNER + "/" + REPO + path, {
+    method: method,
+    headers: {
+      "Accept": "application/vnd.github+json",
+      "Authorization": "Bearer " + token(),
+      "X-GitHub-Api-Version": "2022-11-28",
+      "Content-Type": "application/json"
+    },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  }).then(function (res) {
+    if (res.status === 401) { throw new Error("Token ditolak GitHub. Cek lagi tokennya."); }
+    if (res.status === 404) { var e = new Error("not-found"); e.code = 404; throw e; }
+    if (!res.ok) { throw new Error("GitHub error " + res.status + ". Coba lagi."); }
+    if (res.status === 204) { return null; }
+    return res.json();
+  });
+}
+
+// Branch inbox dibuat sekali dari master saat pertama dipakai.
+function ensureBranch() {
+  return api("GET", "/branches/" + INBOX_BRANCH).catch(function (e) {
+    if (e.code !== 404) { throw e; }
+    return api("GET", "/branches/" + REF).then(function (m) {
+      return api("POST", "/git/refs", { ref: "refs/heads/" + INBOX_BRANCH, sha: m.commit.sha });
+    });
+  });
+}
+
+// Branch inbox hanya menyimpan satu file: hapus sisa upload sebelumnya.
+function cleanInbox(keepName) {
+  return api("GET", "/contents/?ref=" + INBOX_BRANCH).then(function (items) {
+    var dels = (Array.isArray(items) ? items : []).filter(function (it) {
+      return it.type === "file" && it.name !== keepName;
+    }).map(function (it) {
+      return api("DELETE", "/contents/" + encodeURIComponent(it.name),
+        { message: "inbox: ganti " + it.name, sha: it.sha, branch: INBOX_BRANCH });
+    });
+    return Promise.all(dels);
+  });
+}
+
+function readAsBase64(file) {
+  return new Promise(function (resolve, reject) {
+    var r = new FileReader();
+    r.onload = function () { resolve(String(r.result).split(",")[1]); };
+    r.onerror = function () { reject(new Error("File tidak bisa dibaca HP.")); };
+    r.readAsDataURL(file);
+  });
+}
+
+// Upload pakai XHR supaya persen progresnya bisa tampil.
+function putFile(name, b64, onProgress) {
+  return new Promise(function (resolve, reject) {
+    var xhr = new XMLHttpRequest();
+    xhr.open("PUT", "https://api.github.com/repos/" + OWNER + "/" + REPO +
+      "/contents/" + encodeURIComponent(name) + "?ref=" + INBOX_BRANCH);
+    xhr.setRequestHeader("Accept", "application/vnd.github+json");
+    xhr.setRequestHeader("Authorization", "Bearer " + token());
+    xhr.setRequestHeader("X-GitHub-Api-Version", "2022-11-28");
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.upload.onprogress = function (ev) {
+      if (ev.lengthComputable) { onProgress(Math.round(ev.loaded / ev.total * 100)); }
+    };
+    xhr.onload = function () {
+      if (xhr.status === 401) { reject(new Error("Token ditolak GitHub.")); return; }
+      if (xhr.status === 201 || xhr.status === 200) { resolve(); return; }
+      reject(new Error("Upload gagal (" + xhr.status + "). Internet putus atau file terlalu besar."));
+    };
+    xhr.onerror = function () { reject(new Error("Upload gagal. Cek internet lalu ulangi.")); };
+    xhr.send(JSON.stringify({ message: "inbox: " + name, content: b64, branch: INBOX_BRANCH }));
+  });
+}
+
+function baseName(name) {
+  var b = name.split("/").pop().split("\\").pop();
+  return b.replace(/[\/\\]/g, "_");
+}
+
+$("file").addEventListener("change", function () {
+  var f = $("file").files[0];
+  $("fileInfo").textContent = f
+    ? "Dipilih: " + f.name + " (" + Math.round(f.size / 1048576) + " MB)"
+    : "Belum ada file dipilih.";
+});
+
+$("btnUpload").addEventListener("click", function () {
+  if (!token()) { return; }
+  var f = $("file").files[0];
+  if (!f) { setStatus('<span class="err">Belum ada file.</span> Pilih file dulu.'); return; }
+  if (!/\.(pck|exe|apk|zip)$/i.test(f.name)) {
+    setStatus('<span class="err">Ekstensi tidak didukung.</span> Pakai pck, exe, apk, atau zip.');
+    return;
+  }
+  var name = baseName(f.name);
+  setStatus("Menyiapkan inbox...");
+  ensureBranch().then(function () { return cleanInbox(name); })
+    .then(function () {
+      setStatus('Upload <div class="bar"><div id="upBar"></div></div><span id="upPct">0%</span>');
+      return readAsBase64(f).then(function (b64) {
+        return putFile(name, b64, function (p) {
+          var bar = $("upBar"), pct = $("upPct");
+          if (bar) { bar.style.width = p + "%"; }
+          if (pct) { pct.textContent = p + "%"; }
+        });
+      });
+    })
+    .then(function () {
+      setStatus('<span class="ok">Upload selesai:</span> ' + name + ". Lanjut tekan Jalankan recovery.");
+    })
+    .catch(function (e) { setStatus('<span class="err">Gagal upload.</span> ' + e.message); });
+});
+
+$("btnRun").addEventListener("click", function () {
+  if (!token()) { return; }
+  var f = $("file").files[0];
+  if (!f) { setStatus('<span class="err">Belum ada file.</span> Pilih dan upload file dulu.'); return; }
+  var key = $("key").value.trim();
+  if (key && !/^[0-9a-fA-F]{64}$/.test(key)) {
+    setStatus('<span class="err">Key tidak valid.</span> Harus 64 karakter hex, atau kosongkan.');
+    return;
+  }
+  var name = baseName(f.name);
+  triggerTime = Date.now();
+  setStatus("Memerintah runner...");
+  api("POST", "/actions/workflows/" + WORKFLOW + "/dispatches", {
+    ref: REF,
+    inputs: { pck_asset: name, pck_key: key, inbox_branch: INBOX_BRANCH, result_tag: RESULT_TAG }
+  }).then(function () {
+    setStatus('<span class="warn">Perintah terkirim.</span> Menunggu runner mengambil...');
+    $("btnCancel").disabled = false;
+    $("key").value = "";
+    pollTimer = setInterval(poll, POLL_MS);
+    poll();
+  }).catch(function (e) { setStatus('<span class="err">Perintah gagal.</span> ' + e.message); });
+});
+
+// Cari run yang lahir sesudah tombol ditekan, supaya tidak salah baca run lama.
+function poll() {
+  api("GET", "/actions/workflows/" + WORKFLOW + "/runs?per_page=5").then(function (data) {
+    var runs = data.workflow_runs || [];
+    var mine = null;
+    for (var i = 0; i < runs.length; i++) {
+      if (new Date(runs[i].created_at).getTime() >= triggerTime - 60000) { mine = runs[i]; break; }
+    }
+    if (!mine) { setStatus('<span class="warn">Menunggu...</span> Run belum muncul di GitHub.'); return; }
+    runId = mine.id;
+    if (mine.status === "queued") {
+      setStatus('<span class="warn">Antre.</span> Runner Windows disiapkan GitHub. <a href="' + mine.html_url + '">Lihat run</a>');
+    } else if (mine.status === "in_progress") {
+      setStatus('<span class="warn">Recovery jalan.</span> Jangan tutup halaman ini. <a href="' + mine.html_url + '">Lihat log live</a>');
+    } else {
+      clearInterval(pollTimer); pollTimer = null;
+      $("btnCancel").disabled = true;
+      if (mine.conclusion === "success") {
+        setStatus('<span class="ok">Hijau.</span> Mengambil link download...');
+        fetchResult();
+      } else if (mine.conclusion === "cancelled") {
+        setStatus('Dibatalkan. <a href="' + mine.html_url + '">Lihat run</a>');
+      } else {
+        setStatus('<span class="err">Gagal (' + mine.conclusion + ').</span> Buka <a href="' + mine.html_url + '">log run</a> untuk sebabnya.');
+      }
+    }
+  }).catch(function (e) { setStatus('<span class="err">Gagal pantau.</span> ' + e.message); });
+}
+
+function fetchResult() {
+  var f = $("file").files[0];
+  var base = baseName(f.name).replace(/\.[^.]+$/, "");
+  api("GET", "/releases/tags/" + RESULT_TAG).then(function (rel) {
+    var want = base + "-windows.zip";
+    var hit = null;
+    (rel.assets || []).forEach(function (a) { if (a.name === want) { hit = a; } });
+    if (!hit) {
+      $("resultBox").innerHTML = '<span class="err">File ' + want + ' tidak ada di release.</span> Cek log run.';
+      return;
+    }
+    $("resultBox").innerHTML = '<a href="' + hit.browser_download_url + '">Download ' + want +
+      ' (' + Math.round(hit.size / 1048576) + ' MB)</a>';
+    setStatus('<span class="ok">Selesai.</span> Hasil siap diunduh di bawah.');
+  }).catch(function (e) {
+    $("resultBox").innerHTML = '<span class="err">Release belum ada.</span> ' + e.message;
+  });
+}
+
+$("btnCancel").addEventListener("click", function () {
+  if (!runId) { setStatus("Belum ada run yang bisa dibatalkan."); return; }
+  api("POST", "/actions/runs/" + runId + "/cancel").then(function () {
+    setStatus("Permintaan batal terkirim.");
+  }).catch(function (e) { setStatus('<span class="err">Gagal membatalkan.</span> ' + e.message); });
+});
+
+$("remember").addEventListener("change", function () {
+  try {
+    if ($("remember").checked) { localStorage.setItem("rc_token", $("token").value.trim()); }
+    else { localStorage.removeItem("rc_token"); }
+  } catch (e) { /* penyimpanan privat: token hanya di memori */ }
+});
+try {
+  var saved = localStorage.getItem("rc_token");
+  if (saved) { $("token").value = saved; $("remember").checked = true; }
+} catch (e) { /* abaikan */ }
+</script>
+</body>
+</html>
