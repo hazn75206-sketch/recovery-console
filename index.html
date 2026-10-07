@@ -21,7 +21,7 @@
   section { border: 1px solid #2c333c; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
   h2 { font-size: 15px; margin: 0 0 10px; }
   label { display: block; font-size: 14px; margin: 10px 0 4px; }
-  input[type="text"], input[type="password"], input[type="file"] {
+  input[type="text"], input[type="file"] {
     width: 100%; box-sizing: border-box;
     background: #0f1216; color: #e8eaed;
     border: 1px solid #3a424c; border-radius: 8px;
@@ -41,8 +41,6 @@
   button.primary { background: #e0a100; border-color: #e0a100; color: #161a1f; font-weight: 600; }
   button.primary:active { background: #c78e00; }
   .hint { font-size: 13px; color: #b9bec6; margin: 6px 0 0; }
-  .check { display: flex; gap: 8px; align-items: center; margin-top: 10px; font-size: 14px; }
-  .check input { width: 20px; height: 20px; }
   #statusBox { font-size: 15px; }
   #statusBox .bar { height: 8px; background: #0f1216; border-radius: 4px; overflow: hidden; margin-top: 8px; }
   #statusBox .bar > div { height: 100%; width: 0%; background: #e0a100; }
@@ -63,19 +61,8 @@
   <h1>Recovery Console</h1>
   <p class="sub">Kirim file game ke runner Windows GitHub, pantau recovery, download hasilnya.</p>
 
-  <section aria-labelledby="h-token">
-    <h2 id="h-token">1. Token GitHub</h2>
-    <label for="token">Token (butuh akses repo gdsdecomp)</label>
-    <input type="password" id="token" autocomplete="off" placeholder="Tempel token di sini">
-    <div class="check">
-      <input type="checkbox" id="remember">
-      <label for="remember" style="margin:0">Ingat token di HP ini</label>
-    </div>
-    <p class="hint">Tanpa dicentang, token hanya dipakai selama halaman terbuka.</p>
-  </section>
-
   <section aria-labelledby="h-file">
-    <h2 id="h-file">2. File game</h2>
+    <h2 id="h-file">1. File game</h2>
     <label for="file">Pilih file pck, exe, apk, atau zip</label>
     <input type="file" id="file" accept=".pck,.exe,.apk,.zip">
     <p class="hint" id="fileInfo">Belum ada file dipilih.</p>
@@ -84,7 +71,7 @@
   </section>
 
   <section aria-labelledby="h-aksi">
-    <h2 id="h-aksi">3. Aksi</h2>
+    <h2 id="h-aksi">2. Aksi</h2>
     <div class="row">
       <button type="button" id="btnUpload">Upload file</button>
       <button type="button" id="btnRun" class="primary">Jalankan recovery</button>
@@ -93,12 +80,12 @@
   </section>
 
   <section aria-labelledby="h-status">
-    <h2 id="h-status">4. Status</h2>
+    <h2 id="h-status">3. Status</h2>
     <div id="statusBox" aria-live="polite">Menunggu. Upload file dulu, lalu jalankan recovery.</div>
   </section>
 
   <section aria-labelledby="h-hasil">
-    <h2 id="h-hasil">5. Hasil</h2>
+    <h2 id="h-hasil">4. Hasil</h2>
     <div id="resultBox">Link download muncul di sini setelah recovery hijau.</div>
   </section>
 
@@ -119,6 +106,9 @@ var INBOX_BRANCH = "pck-inbox";
 var RESULT_TAG = "hasil-recovery";
 var POLL_MS = 15000;
 
+// Token disuntik saat deploy dari secret repo, tidak tertulis di kode.
+var TOKEN = "__RC_TOKEN__";
+
 var runId = null;
 var pollTimer = null;
 var triggerTime = 0;
@@ -127,11 +117,7 @@ function $(id) { return document.getElementById(id); }
 
 function setStatus(html) { $("statusBox").innerHTML = html; }
 
-function token() {
-  var t = $("token").value.trim();
-  if (!t) { setStatus('<span class="err">Token kosong.</span> Tempel token dulu.'); }
-  return t;
-}
+function token() { return TOKEN; }
 
 // Bungkus API GitHub. Token salah atau kadaluarsa langsung dijelaskan di sini.
 function api(method, path, body) {
@@ -326,16 +312,6 @@ $("btnCancel").addEventListener("click", function () {
   }).catch(function (e) { setStatus('<span class="err">Gagal membatalkan.</span> ' + e.message); });
 });
 
-$("remember").addEventListener("change", function () {
-  try {
-    if ($("remember").checked) { localStorage.setItem("rc_token", $("token").value.trim()); }
-    else { localStorage.removeItem("rc_token"); }
-  } catch (e) { /* penyimpanan privat: token hanya di memori */ }
-});
-try {
-  var saved = localStorage.getItem("rc_token");
-  if (saved) { $("token").value = saved; $("remember").checked = true; }
-} catch (e) { /* abaikan */ }
 </script>
 </body>
 </html>
