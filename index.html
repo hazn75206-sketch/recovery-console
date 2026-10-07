@@ -112,6 +112,7 @@ var TOKEN = "__RC_TOKEN__";
 var runId = null;
 var pollTimer = null;
 var triggerTime = 0;
+var lastParts = 1;
 
 function $(id) { return document.getElementById(id); }
 
@@ -162,17 +163,8 @@ function cleanInbox(keepName) {
   });
 }
 
-function readAsBase64(file) {
-  return new Promise(function (resolve, reject) {
-    var r = new FileReader();
-    r.onload = function () { resolve(String(r.result).split(",")[1]); };
-    r.onerror = function () { reject(new Error("File tidak bisa dibaca HP.")); };
-    r.readAsDataURL(file);
-  });
-}
-
 // Upload pakai XHR supaya persen progresnya bisa tampil.
-function putFile(name, b64, onProgress) {
+function putFile(name, b64) {
   return new Promise(function (resolve, reject) {
     var xhr = new XMLHttpRequest();
     xhr.open("PUT", "https://api.github.com/repos/" + OWNER + "/" + REPO +
@@ -181,17 +173,51 @@ function putFile(name, b64, onProgress) {
     xhr.setRequestHeader("Authorization", "Bearer " + token());
     xhr.setRequestHeader("X-GitHub-Api-Version", "2022-11-28");
     xhr.setRequestHeader("Content-Type", "application/json");
-    xhr.upload.onprogress = function (ev) {
-      if (ev.lengthComputable) { onProgress(Math.round(ev.loaded / ev.total * 100)); }
-    };
     xhr.onload = function () {
       if (xhr.status === 401) { reject(new Error("Token ditolak GitHub.")); return; }
       if (xhr.status === 201 || xhr.status === 200) { resolve(); return; }
-      reject(new Error("Upload gagal (" + xhr.status + "). Internet putus atau file terlalu besar."));
+      reject(new Error(githubMsg(xhr, "Upload gagal")));
     };
     xhr.onerror = function () { reject(new Error("Upload gagal. Cek internet lalu ulangi.")); };
     xhr.send(JSON.stringify({ message: "inbox: " + name, content: b64, branch: INBOX_BRANCH }));
   });
+}
+
+// Tampilkan pesan asli GitHub supaya sebab gagalnya jelas.
+function githubMsg(xhr, fallback) {
+  try {
+    var j = JSON.parse(xhr.responseText);
+    if (j && j.message) { return fallback + " (" + j.message + ")"; }
+  } catch (e) { /* abaikan */ }
+  return fallback + " (kode " + xhr.status + ")";
+}
+
+// File di atas 100MB ditolak GitHub, jadi potong 20MB per bagian.
+var CHUNK = 20 * 1048576;
+
+function readSlice(file, i) {
+  return new Promise(function (resolve, reject) {
+    var r = new FileReader();
+    r.onload = function () { resolve(String(r.result).split(",")[1]); };
+    r.onerror = function () { reject(new Error("File tidak bisa dibaca HP.")); };
+    r.readAsDataURL(file.slice(i * CHUNK, (i + 1) * CHUNK));
+  });
+}
+
+function uploadChunked(name, file, onProgress) {
+  var total = Math.max(1, Math.ceil(file.size / CHUNK));
+  var chain = Promise.resolve();
+  var done = 0;
+  for (var i = 0; i < total; i++) {
+    (function (i) {
+      var part = total === 1 ? name : name + ".part" + String(i + 1).padStart(3, "0");
+      chain = chain.then(function () {
+        return readSlice(file, i).then(function (b64) { return putFile(part, b64); })
+          .then(function () { done++; onProgress(Math.round(done / total * 100)); });
+      });
+    })(i);
+  }
+  return chain.then(function () { return total; });
 }
 
 function baseName(name) {
@@ -219,16 +245,16 @@ $("btnUpload").addEventListener("click", function () {
   ensureBranch().then(function () { return cleanInbox(name); })
     .then(function () {
       setStatus('Upload <div class="bar"><div id="upBar"></div></div><span id="upPct">0%</span>');
-      return readAsBase64(f).then(function (b64) {
-        return putFile(name, b64, function (p) {
-          var bar = $("upBar"), pct = $("upPct");
-          if (bar) { bar.style.width = p + "%"; }
-          if (pct) { pct.textContent = p + "%"; }
-        });
+      return uploadChunked(name, f, function (p) {
+        var bar = $("upBar"), pct = $("upPct");
+        if (bar) { bar.style.width = p + "%"; }
+        if (pct) { pct.textContent = p + "%"; }
       });
     })
-    .then(function () {
-      setStatus('<span class="ok">Upload selesai:</span> ' + name + ". Lanjut tekan Jalankan recovery.");
+    .then(function (parts) {
+      lastParts = parts;
+      var extra = parts > 1 ? " (" + parts + " bagian)" : "";
+      setStatus('<span class="ok">Upload selesai:</span> ' + name + extra + ". Lanjut tekan Jalankan recovery.");
     })
     .catch(function (e) { setStatus('<span class="err">Gagal upload.</span> ' + e.message); });
 });
@@ -247,7 +273,7 @@ $("btnRun").addEventListener("click", function () {
   setStatus("Memerintah runner...");
   api("POST", "/actions/workflows/" + WORKFLOW + "/dispatches", {
     ref: REF,
-    inputs: { pck_asset: name, pck_key: key, inbox_branch: INBOX_BRANCH, result_tag: RESULT_TAG }
+    inputs: { pck_asset: name, pck_key: key, pck_parts: String(lastParts), inbox_branch: INBOX_BRANCH, result_tag: RESULT_TAG }
   }).then(function () {
     setStatus('<span class="warn">Perintah terkirim.</span> Menunggu runner mengambil...');
     $("btnCancel").disabled = false;
