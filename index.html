@@ -89,6 +89,10 @@
       <button type="button" id="btnRun" class="primary">Jalankan recovery</button>
       <button type="button" id="btnCancel" disabled>Batalkan</button>
     </div>
+    <div class="row">
+      <button type="button" id="btnRunLegacy">Gunakan upload lama (tanpa upload ulang)</button>
+    </div>
+    <p class="hint">Upload lama = file yang sudah ada di inbox repo gdsdecomp (mis. CGOW.apk 18 bagian). Pilih file yang sama di section 1 (untuk nama), lalu tekan tombol ini.</p>
   </section>
 
   <section aria-labelledby="h-status">
@@ -115,6 +119,7 @@ var REPO = "recovery-console";
 var WORKFLOW = "recover-official.yml";
 var REF = "main";
 var INBOX_BRANCH = "pck-inbox";
+var LEGACY_REPO = "hazn75206-sketch/gdsdecomp";
 var RESULT_TAG = "hasil-recovery";
 var POLL_MS = 15000;
 
@@ -337,6 +342,19 @@ $("btnRun").addEventListener("click", function () {
   }
   startRecovery(
     { pck_asset: name, pck_key: key, pck_parts: String(lastParts), inbox_branch: INBOX_BRANCH, result_tag: RESULT_TAG },
+    name.replace(/\.[^.]+$/, "")
+  );
+});
+
+$("btnRunLegacy").addEventListener("click", function () {
+  if (!token()) { return; }
+  var f = $("file").files[0];
+  if (!f) { setStatus('<span class="err">Belum ada file.</span> Pilih file yang sama di section 1 (hanya untuk nama).'); return; }
+  var key = readKeyOrNull();
+  if (key === undefined) { return; }
+  var name = baseName(f.name);
+  startRecovery(
+    { pck_asset: name, pck_key: key, pck_parts: "0", inbox_branch: INBOX_BRANCH, inbox_repo: LEGACY_REPO, result_tag: RESULT_TAG },
     name.replace(/\.[^.]+$/, "")
   );
 });

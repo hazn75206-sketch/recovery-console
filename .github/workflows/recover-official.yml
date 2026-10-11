@@ -24,6 +24,11 @@ on:
         default: "pck-inbox"
         required: false
         type: string
+      inbox_repo:
+        description: "Repo pemilik branch inbox (untuk pakai upload lama di repo lain)"
+        default: "hazn75206-sketch/recovery-console"
+        required: false
+        type: string
       result_tag:
         description: "Tag release hasil"
         default: "hasil-recovery"
@@ -53,6 +58,7 @@ jobs:
         if: inputs.pck_url == ''
         uses: actions/checkout@v4
         with:
+          repository: ${{ inputs.inbox_repo }}
           ref: ${{ inputs.inbox_branch }}
           path: inbox
           fetch-depth: 1
@@ -107,6 +113,21 @@ jobs:
           if [ -z "$ASSET" ]; then
             echo "pck_asset kosong. Isi nama file (wajib untuk mode upload maupun link)."
             exit 1
+          fi
+          if [ "$PARTS" = "0" ]; then
+            if [ -f "inbox/$ASSET" ]; then
+              PARTS="1"
+              echo "File utuh ditemukan di inbox."
+            else
+              COUNT=$(ls inbox/"$ASSET".part* 2>/dev/null | wc -l)
+              if [ "$COUNT" -ge 1 ]; then
+                PARTS="$COUNT"
+                echo "Otomatis: $COUNT bagian ditemukan."
+              else
+                echo "File $ASSET (utuh maupun .part*) tidak ada di inbox ${{ inputs.inbox_repo }}@${{ inputs.inbox_branch }}."
+                exit 1
+              fi
+            fi
           fi
           if [ "$PARTS" != "1" ]; then
             COUNT=$(ls inbox/"$ASSET".part* 2>/dev/null | wc -l)
