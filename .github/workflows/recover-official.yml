@@ -1,0 +1,183 @@
+name: Recover Official (windows)
+on:
+  workflow_dispatch:
+    inputs:
+      pck_asset:
+        description: "Nama file (pck/exe/apk/zip). Mode upload: nama di branch inbox. Mode link: nama file hasil download."
+        required: false
+        type: string
+      pck_url:
+        description: "Link download langsung http(s) (opsional). Kalau diisi, runner download sendiri tanpa upload dari HP."
+        required: false
+        type: string
+      pck_key:
+        description: "Encryption key 64-char hex (opsional)"
+        required: false
+        type: string
+      pck_parts:
+        description: "Jumlah bagian file (web isi otomatis)"
+        default: "1"
+        required: false
+        type: string
+      inbox_branch:
+        description: "Branch inbox tempat file upload"
+        default: "pck-inbox"
+        required: false
+        type: string
+      result_tag:
+        description: "Tag release hasil"
+        default: "hasil-recovery"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  recover:
+    runs-on: windows-latest
+    name: Recover ${{ inputs.pck_asset }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Download official GDRE Tools (windows)
+        shell: bash
+        run: |
+          set -e
+          gh release download v2.7.0 -R GDRETools/gdsdecomp -p "GDRE_tools-v2.7.0-windows.zip" -O official.zip
+          mkdir -p gdre-bin
+          7z x official.zip -ogdre-bin/ > /dev/null
+          echo "BIN=$(ls gdre-bin/*.exe | head -1)"
+
+      - name: Ambil file dari inbox
+        if: inputs.pck_url == ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.inbox_branch }}
+          path: inbox
+          fetch-depth: 1
+
+      - name: Download dari link (mode tanpa upload)
+        if: inputs.pck_url != ''
+        shell: bash
+        run: |
+          set -e
+          URL='${{ inputs.pck_url }}'
+          ASSET='${{ inputs.pck_asset }}'
+          if [[ "$URL" != https://* && "$URL" != http://* ]]; then
+            echo "URL harus diawali http:// atau https:// (link langsung, bukan halaman web)."
+            exit 1
+          fi
+          if [ -z "$ASSET" ]; then
+            echo "Nama file (pck_asset) wajib diisi untuk mode link."
+            exit 1
+          fi
+          EXT=$(echo "${ASSET##*.}" | tr '[:upper:]' '[:lower:]')
+          case "$EXT" in
+            pck|exe|apk|zip) ;;
+            *) echo "Ekstensi tidak didukung: $EXT (pakai pck/exe/apk/zip)."; exit 1 ;;
+          esac
+          mkdir -p inbox
+          echo "Download langsung dari URL (tanpa lewat HP)..."
+          curl -L --fail --retry 2 --max-time 3600 -o "inbox/$ASSET" "$URL"
+          ls -lh "inbox/$ASSET"
+
+      - name: Validasi key (jika diisi)
+        shell: bash
+        run: |
+          KEY='${{ inputs.pck_key }}'
+          if [ -n "$KEY" ]; then
+            if ! [[ "$KEY" =~ ^[0-9a-fA-F]{64}$ ]]; then
+              echo "KEY tidak valid: harus 64 karakter hex."
+              exit 1
+            fi
+            echo "::add-mask::$KEY"
+            echo "KEY_OK=1" >> "$GITHUB_ENV"
+          else
+            echo "Tanpa key: lanjut; dibatalkan otomatis kalau game ternyata terenkripsi."
+          fi
+
+      - name: Tentukan target recovery
+        shell: bash
+        id: target
+        run: |
+          set -e
+          ASSET='${{ inputs.pck_asset }}'
+          PARTS='${{ inputs.pck_parts }}'
+          if [ -z "$ASSET" ]; then
+            echo "pck_asset kosong. Isi nama file (wajib untuk mode upload maupun link)."
+            exit 1
+          fi
+          if [ "$PARTS" != "1" ]; then
+            COUNT=$(ls inbox/"$ASSET".part* 2>/dev/null | wc -l)
+            if [ "$COUNT" != "$PARTS" ]; then
+              echo "Bagian tidak lengkap: $COUNT dari $PARTS. Upload ulang dari web."
+              exit 1
+            fi
+            cat inbox/"$ASSET".part* > "inbox/$ASSET"
+            echo "Disambung dari $PARTS bagian."
+          fi
+          EXT=$(echo "${ASSET##*.}" | tr '[:upper:]' '[:lower:]')
+          TARGET=""
+          if [ "$EXT" = "zip" ]; then
+            mkdir -p game
+            7z x "inbox/$ASSET" -ogame/ > /dev/null
+            PCKS=$(find game -iname '*.pck' | sort)
+            if [ -n "$PCKS" ]; then
+              while IFS= read -r p; do
+                [ -z "$p" ] && continue
+                base=$(basename "$p")
+                base="${base%.*}"
+                if [ -n "$(find game -iname "$base.exe" | head -1)" ]; then TARGET="$p"; break; fi
+              done <<< "$PCKS"
+              if [ -z "$TARGET" ]; then TARGET=$(find game -iname '*.pck' -printf '%s %p\n' | sort -nr | head -1 | cut -d' ' -f2-); fi
+            else
+              EXE=$(find game -iname '*.exe' | head -1)
+              APK=$(find game -iname '*.apk' | head -1)
+              if [ -n "$EXE" ]; then TARGET="$EXE"; elif [ -n "$APK" ]; then TARGET="$APK"; fi
+            fi
+          elif [ "$EXT" = "pck" ] || [ "$EXT" = "exe" ] || [ "$EXT" = "apk" ]; then
+            TARGET="inbox/$ASSET"
+          else
+            echo "Ekstensi tidak didukung: $EXT (pakai pck/exe/apk/zip)."
+            exit 1
+          fi
+          if [ -z "$TARGET" ]; then
+            echo "Di dalam zip tidak ada pck/exe/apk. Recovery dibatalkan."
+            exit 1
+          fi
+          echo "TARGET=$TARGET"
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+
+      - name: Recovery (live log)
+        shell: bash
+        run: |
+          set -e
+          BIN=$(ls gdre-bin/*.exe | head -1)
+          TARGET='${{ steps.target.outputs.target }}'
+          BASENAME=$(basename "${{ inputs.pck_asset }}")
+          BASENAME="${BASENAME%.*}"
+          echo "BASENAME=$BASENAME" >> "$GITHUB_ENV"
+          mkdir -p recovered/
+          KEY='${{ inputs.pck_key }}'
+          KEYARG=""
+          if [ -n "$KEY" ]; then KEYARG="--key=$KEY"; fi
+          "$BIN" --headless --recover="$TARGET" $KEYARG --output=recovered/ 2>&1 | tee "recovery-$BASENAME.log"
+          echo "---OUTPUT---"
+          du -sh recovered/
+          find recovered/ -type f | wc -l
+          if [ -z "$KEY" ] && grep -qi "encrypt" "recovery-$BASENAME.log"; then
+            echo "Game terenkripsi: masukkan key lalu jalankan ulang. Recovery dibatalkan."
+            exit 1
+          fi
+
+      - name: Zip + publish ke Release
+        shell: bash
+        run: |
+          set -e
+          ZIP="$BASENAME-windows.zip"
+          7z a "$ZIP" recovered/ "recovery-$BASENAME.log"
+          ls -lh "$ZIP"
+          gh release view "${{ inputs.result_tag }}" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 || gh release create "${{ inputs.result_tag }}" --repo "$GITHUB_REPOSITORY" --title "Hasil Recovery" --notes "Hasil recovery otomatis dari Recovery Console."
+          gh release upload "${{ inputs.result_tag }}" --repo "$GITHUB_REPOSITORY" "$ZIP" --clobber
+          echo "Selesai: $ZIP ada di release ${{ inputs.result_tag }} (link download langsung, tanpa artifact)."
