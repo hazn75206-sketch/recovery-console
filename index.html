@@ -21,7 +21,7 @@
   section { border: 1px solid #2c333c; border-radius: 10px; padding: 14px; margin-bottom: 14px; }
   h2 { font-size: 15px; margin: 0 0 10px; }
   label { display: block; font-size: 14px; margin: 10px 0 4px; }
-  input[type="text"], input[type="file"] {
+  input[type="text"], input[type="url"], input[type="file"] {
     width: 100%; box-sizing: border-box;
     background: #0f1216; color: #e8eaed;
     border: 1px solid #3a424c; border-radius: 8px;
@@ -59,10 +59,10 @@
 <body>
 <main>
   <h1>Recovery Console</h1>
-  <p class="sub">Kirim file game ke runner Windows GitHub, pantau recovery, download hasilnya.</p>
+  <p class="sub">Kirim file game ke runner Windows GitHub (upload atau tempel link), pantau recovery, download hasilnya.</p>
 
   <section aria-labelledby="h-file">
-    <h2 id="h-file">1. File game</h2>
+    <h2 id="h-file">1. File game (upload dari HP)</h2>
     <label for="file">Pilih file pck, exe, apk, atau zip</label>
     <input type="file" id="file" accept=".pck,.exe,.apk,.zip">
     <p class="hint" id="fileInfo">Belum ada file dipilih.</p>
@@ -70,8 +70,20 @@
     <input type="text" id="key" autocomplete="off" inputmode="latin" placeholder="Kosongkan kalau game tidak dienkripsi">
   </section>
 
+  <section aria-labelledby="h-link">
+    <h2 id="h-link">2. Atau link download (tanpa upload)</h2>
+    <label for="url">Tempel link langsung ke file pck, exe, apk, atau zip</label>
+    <input type="url" id="url" autocomplete="off" inputmode="url" placeholder="https://contoh.com/game.apk">
+    <p class="hint">Runner yang download sendiri, HP tidak perlu download game aslinya. Wajib link langsung (bukan halaman web, bukan Google Drive).</p>
+    <label for="urlName">Nama file (otomatis dari link, boleh diubah)</label>
+    <input type="text" id="urlName" autocomplete="off" inputmode="latin" placeholder="game.apk">
+    <div class="row">
+      <button type="button" id="btnRunUrl" class="primary">Jalankan recovery dari link</button>
+    </div>
+  </section>
+
   <section aria-labelledby="h-aksi">
-    <h2 id="h-aksi">2. Aksi</h2>
+    <h2 id="h-aksi">3. Aksi (mode upload)</h2>
     <div class="row">
       <button type="button" id="btnUpload">Upload file</button>
       <button type="button" id="btnRun" class="primary">Jalankan recovery</button>
@@ -80,12 +92,12 @@
   </section>
 
   <section aria-labelledby="h-status">
-    <h2 id="h-status">3. Status</h2>
+    <h2 id="h-status">4. Status</h2>
     <div id="statusBox" aria-live="polite">Menunggu. Upload file dulu, lalu jalankan recovery.</div>
   </section>
 
   <section aria-labelledby="h-hasil">
-    <h2 id="h-hasil">4. Hasil</h2>
+    <h2 id="h-hasil">5. Hasil</h2>
     <div id="resultBox">Link download muncul di sini setelah recovery hijau.</div>
   </section>
 
@@ -114,6 +126,7 @@ var pollTimer = null;
 var triggerTime = 0;
 var lastParts = 1;
 var uploadedName = null;
+var resultBase = null;
 
 function $(id) { return document.getElementById(id); }
 
@@ -230,12 +243,57 @@ function baseName(name) {
   return b.replace(/[\/\\]/g, "_");
 }
 
+// Ambil nama file dari ujung path URL (buang query/hash).
+function deriveName(url) {
+  var clean = String(url).split("?")[0].split("#")[0];
+  var b = baseName(clean);
+  try { b = decodeURIComponent(b); } catch (e) { /* abaikan */ }
+  return b;
+}
+
+function validGameName(name) {
+  return /\.(pck|exe|apk|zip)$/i.test(name);
+}
+
+function readKeyOrNull() {
+  var key = $("key").value.trim();
+  if (key && !/^[0-9a-fA-F]{64}$/.test(key)) {
+    setStatus('<span class="err">Key tidak valid.</span> Harus 64 karakter hex, atau kosongkan.');
+    return undefined;
+  }
+  return key;
+}
+
+// Kirim dispatch lalu pantau run yang sama. Dipakai mode upload maupun link.
+function startRecovery(inputs, base) {
+  resultBase = base;
+  triggerTime = Date.now();
+  setStatus("Memerintah runner...");
+  api("POST", "/actions/workflows/" + WORKFLOW + "/dispatches", {
+    ref: REF, inputs: inputs
+  }).then(function () {
+    setStatus('<span class="warn">Perintah terkirim.</span> Menunggu runner mengambil...');
+    $("btnCancel").disabled = false;
+    $("key").value = "";
+    pollTimer = setInterval(poll, POLL_MS);
+    poll();
+  }).catch(function (e) { setStatus('<span class="err">Perintah gagal.</span> ' + e.message); });
+}
+
 $("file").addEventListener("change", function () {
   var f = $("file").files[0];
   uploadedName = null;
   $("fileInfo").textContent = f
     ? "Dipilih: " + f.name + " (" + Math.round(f.size / 1048576) + " MB)"
     : "Belum ada file dipilih.";
+});
+
+// Isi otomatis nama file saat link ditempel (boleh diubah manual).
+$("url").addEventListener("change", function () {
+  var u = $("url").value.trim();
+  if (!u || $("urlName").value.trim()) { return; }
+  var d = deriveName(u);
+  if (d) { $("urlName").value = d; }
 });
 
 $("btnUpload").addEventListener("click", function () {
@@ -270,28 +328,37 @@ $("btnRun").addEventListener("click", function () {
   if (!token()) { return; }
   var f = $("file").files[0];
   if (!f) { setStatus('<span class="err">Belum ada file.</span> Pilih dan upload file dulu.'); return; }
-  var key = $("key").value.trim();
-  if (key && !/^[0-9a-fA-F]{64}$/.test(key)) {
-    setStatus('<span class="err">Key tidak valid.</span> Harus 64 karakter hex, atau kosongkan.');
-    return;
-  }
+  var key = readKeyOrNull();
+  if (key === undefined) { return; }
   var name = baseName(f.name);
   if (uploadedName !== name) {
     setStatus('<span class="err">File belum diupload.</span> Tekan Upload file sampai muncul tulisan selesai.');
     return;
   }
-  triggerTime = Date.now();
-  setStatus("Memerintah runner...");
-  api("POST", "/actions/workflows/" + WORKFLOW + "/dispatches", {
-    ref: REF,
-    inputs: { pck_asset: name, pck_key: key, pck_parts: String(lastParts), inbox_branch: INBOX_BRANCH, result_tag: RESULT_TAG }
-  }).then(function () {
-    setStatus('<span class="warn">Perintah terkirim.</span> Menunggu runner mengambil...');
-    $("btnCancel").disabled = false;
-    $("key").value = "";
-    pollTimer = setInterval(poll, POLL_MS);
-    poll();
-  }).catch(function (e) { setStatus('<span class="err">Perintah gagal.</span> ' + e.message); });
+  startRecovery(
+    { pck_asset: name, pck_key: key, pck_parts: String(lastParts), inbox_branch: INBOX_BRANCH, result_tag: RESULT_TAG },
+    name.replace(/\.[^.]+$/, "")
+  );
+});
+
+$("btnRunUrl").addEventListener("click", function () {
+  if (!token()) { return; }
+  var url = $("url").value.trim();
+  if (!/^https?:\/\//i.test(url)) {
+    setStatus('<span class="err">Link tidak valid.</span> Harus diawali http:// atau https:// dan langsung ke file.');
+    return;
+  }
+  var key = readKeyOrNull();
+  if (key === undefined) { return; }
+  var name = baseName($("urlName").value.trim() || deriveName(url));
+  if (!validGameName(name)) {
+    setStatus('<span class="err">Nama file tidak didukung.</span> Ujung link harus .pck/.exe/.apk/.zip, atau isi Nama file manual.');
+    return;
+  }
+  startRecovery(
+    { pck_asset: name, pck_url: url, pck_key: key, pck_parts: "1", inbox_branch: INBOX_BRANCH, result_tag: RESULT_TAG },
+    name.replace(/\.[^.]+$/, "")
+  );
 });
 
 // Cari run yang lahir sesudah tombol ditekan, supaya tidak salah baca run lama.
@@ -324,8 +391,11 @@ function poll() {
 }
 
 function fetchResult() {
-  var f = $("file").files[0];
-  var base = baseName(f.name).replace(/\.[^.]+$/, "");
+  var base = resultBase;
+  if (!base) {
+    $("resultBox").innerHTML = '<span class="err">Nama hasil tidak diketahui.</span> Cek log run.';
+    return;
+  }
   api("GET", "/releases/tags/" + RESULT_TAG).then(function (rel) {
     var want = base + "-windows.zip";
     var hit = null;

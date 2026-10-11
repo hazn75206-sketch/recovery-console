@@ -5,6 +5,9 @@ Web satu file (`index.html`) untuk memerintah recovery GDRE Tools dari HP.
 Alur: pilih file game (pck, exe, apk, zip),
 upload ke branch `pck-inbox` di repo `gdsdecomp`, tekan Jalankan recovery,
 pantau status, download hasil dari Release `hasil-recovery`.
+Mode link: tempel URL langsung ke file, runner yang download sendiri,
+HP tidak perlu download game aslinya. Hasil zip langsung bisa dibuka
+di Godot (Android) untuk cobain projectnya.
 Token sudah tertanam di halaman (pemakaian pribadi, jangan disebar).
 
 Buka: https://hazn75206-sketch.github.io/recovery-console/
