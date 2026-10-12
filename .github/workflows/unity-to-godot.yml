@@ -214,6 +214,8 @@ jobs:
           tar -czf "$BASE-godot.tar.gz" -C work game_godot
           tar -czf "$BASE-unity-source.tar.gz" unity_out
           ls -lh "$BASE-godot.tar.gz" "$BASE-unity-source.tar.gz"
+          cp "$BASE-godot.tar.gz" "$BASE-unity-source.tar.gz" main/
+          cd main
           gh release delete "$TAG" -y --cleanup-tag 2>/dev/null || true
           git push origin ":refs/tags/$TAG" 2>/dev/null || true
           gh release create "$TAG" --title "Unity to Godot $TAG" --notes "Hasil convert Unity ke Godot (Unidot headless). Script C#/shader tidak ikut (batas tool)."
