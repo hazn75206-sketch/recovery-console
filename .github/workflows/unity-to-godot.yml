@@ -4,8 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       apk_base:
-        description: "Nama file APK/XAPK (tanpa .part)"
+        description: "Nama file game (tanpa .part). Mode link: nama hasil download."
         default: "game.apk"
+        required: false
+        type: string
+      game_url:
+        description: "Link download langsung (opsional). Kalau diisi, runner download sendiri."
         required: false
         type: string
       inbox_branch:
@@ -34,13 +38,34 @@ jobs:
           path: main
 
       - name: Ambil pecahan game dari inbox
+        if: inputs.game_url == ''
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.inbox_branch }}
           path: inbox
           fetch-depth: 1
 
+      - name: Download dari link (mode tanpa upload)
+        if: inputs.game_url != ''
+        shell: bash
+        run: |
+          set -e
+          URL='${{ inputs.game_url }}'
+          GAME='${{ inputs.apk_base }}'
+          if [[ "$URL" != https://* && "$URL" != http://* ]]; then
+            echo "URL harus diawali http(s) dan langsung ke file (bukan halaman web/login)."
+            exit 1
+          fi
+          if [ -z "$GAME" ]; then
+            echo "apk_base wajib diisi untuk mode link (jadi nama file)."
+            exit 1
+          fi
+          echo "Download langsung dari URL..."
+          curl -L --fail --retry 2 --max-time 3600 -o "$GAME" "$URL"
+          ls -lh "$GAME"
+
       - name: Sambung pecahan + validasi
+        if: inputs.game_url == ''
         shell: bash
         run: |
           set -e
@@ -53,6 +78,32 @@ jobs:
           cat inbox/"$GAME".part* > "$GAME"
           ls -lh "$GAME"
           python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); n=z.namelist(); print('entries=%d bad=%s' % (len(n), z.testzip())); assert len(n) > 10 and z.testzip() is None" "$GAME"
+
+      - name: Validasi file link + ekstrak XAPK
+        if: inputs.game_url != ''
+        shell: bash
+        run: |
+          set -e
+          GAME='${{ inputs.apk_base }}'
+          ls -lh "$GAME"
+          python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); n=z.namelist(); print('entries=%d bad=%s' % (len(n), z.testzip())); assert len(n) > 0 and z.testzip() is None" "$GAME"
+          if [[ "$GAME" == *.xapk ]]; then
+            echo "XAPK terdeteksi, ekstrak dulu (APK utama dipilih otomatis)."
+            python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall('xapk_in')" "$GAME"
+          fi
+
+      - name: Tentukan APK utama
+        shell: bash
+        run: |
+          set -e
+          GAME='${{ inputs.apk_base }}'
+          SRC="$GAME"
+          if [[ "$GAME" == *.xapk ]]; then
+            SRC=$(python3 -c "import os; fs=[os.path.join('xapk_in',f) for f in os.listdir('xapk_in') if f.endswith('.apk')]; print(max(fs, key=os.path.getsize))")
+          fi
+          echo "APK utama: $SRC"
+          cp "$SRC" main.apk
+          ls -lh main.apk
 
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
@@ -79,7 +130,7 @@ jobs:
             sleep 5
           done
           grep -q "Now listening" ar-web.log
-          curl -sS -m 1800 -X POST --data-urlencode "Path=$GITHUB_WORKSPACE/${{ inputs.apk_base }}" http://127.0.0.1:18089/LoadFile -o /dev/null
+          curl -sS -m 1800 -X POST --data-urlencode "Path=$GITHUB_WORKSPACE/main.apk" http://127.0.0.1:18089/LoadFile -o /dev/null
           echo "Load terkirim, tunggu processing..."
           for i in $(seq 1 120); do
             grep -q "Finished processing assets" ar-web.log && break
