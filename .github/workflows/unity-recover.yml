@@ -32,6 +32,11 @@ jobs:
     timeout-minutes: 180
     name: Rip Unity (${{ inputs.apk_base }})
     steps:
+      - name: Checkout repo (untuk akses git saat release)
+        uses: actions/checkout@v4
+        with:
+          path: main
+
       - name: Ambil pecahan game dari inbox
         if: inputs.game_url == ''
         uses: actions/checkout@v4
