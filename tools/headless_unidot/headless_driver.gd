@@ -18,9 +18,6 @@ func _enter_tree():
 	if marker.is_empty():
 		marker = OS.get_user_data_dir() + "/../unidot_done.txt"
 	print("HEADLESS: driver aktif, unity_dir=" + unity_dir)
-
-func _enter_tree():
-	print("HEADLESS: driver aktif")
 	var cls = load("res://addons/unidot_importer/package_import_dialog.gd")
 	dlg = cls.new()
 	dlg.editor_plugin = self

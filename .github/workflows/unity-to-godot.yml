@@ -178,6 +178,18 @@ jobs:
           find "$W/unity_assets" -name "*.meta" | wc -l
           find "$W/unity_assets" -name "*.prefab" | wc -l
 
+      - name: Smoke test driver (60 frame)
+        shell: bash
+        env:
+          UNITY_SRC_DIR: ${{ github.workspace }}/work/game_godot/unity_assets
+          UNIDOT_DONE: ${{ github.workspace }}/unidot_done.txt
+        run: |
+          set -e
+          cd tools
+          ./Godot_v4.3-stable_linux.x86_64 --headless --editor --path "$GITHUB_WORKSPACE/work/game_godot" --quit-after 60 > "$GITHUB_WORKSPACE/smoke.log" 2>&1 || true
+          grep -q "HEADLESS: driver aktif" "$GITHUB_WORKSPACE/smoke.log" || (tail -n 20 "$GITHUB_WORKSPACE/smoke.log"; echo "SMOKE GAGAL: driver tidak jalan"; exit 1)
+          echo SMOKE_OK
+
       - name: Import headless (Unidot, full)
         shell: bash
         env:
