@@ -11,10 +11,10 @@ var unity_dir = ""
 var marker = ""
 
 func _enter_tree():
-	unity_dir = OS.get_environment("FFI_UNITY_DIR")
+	unity_dir = OS.get_environment("UNITY_SRC_DIR")
 	if unity_dir.is_empty():
 		unity_dir = "res://unity_assets"
-	marker = OS.get_environment("FFI_DONE_MARKER")
+	marker = OS.get_environment("UNIDOT_DONE")
 	if marker.is_empty():
 		marker = OS.get_user_data_dir() + "/../unidot_done.txt"
 	print("HEADLESS: driver aktif, unity_dir=" + unity_dir)
