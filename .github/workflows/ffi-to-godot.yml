@@ -1,0 +1,156 @@
+name: FFI to Godot (Unidot headless)
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_base:
+        description: "Nama file APK (tanpa .part)"
+        default: "FFI.apk"
+        required: false
+        type: string
+      inbox_branch:
+        description: "Branch tempat pecahan APK"
+        default: "ffi-inbox"
+        required: false
+        type: string
+      result_tag:
+        description: "Tag release hasil"
+        default: "ffi-godot"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  convert:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    name: Rip + Unidot headless (${{ inputs.apk_base }})
+    steps:
+      - name: Checkout repo (workflow + driver)
+        uses: actions/checkout@v4
+        with:
+          path: main
+
+      - name: Ambil pecahan APK dari inbox
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.inbox_branch }}
+          path: inbox
+          fetch-depth: 1
+
+      - name: Sambung pecahan + validasi APK
+        shell: bash
+        run: |
+          set -e
+          APK='${{ inputs.apk_base }}'
+          PARTS=(inbox/"$APK".part*)
+          if [ ! -e "${PARTS[0]}" ]; then
+            echo "BELUM ADA: pecahan $APK.part* tidak ada di branch ${{ inputs.inbox_branch }}. Upload dulu, lalu dispatch ulang."
+            exit 1
+          fi
+          cat inbox/"$APK".part* > "$APK"
+          ls -lh "$APK"
+          python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); n=z.namelist(); print('entries=%d bad=%s' % (len(n), z.testzip())); assert len(n) > 10 and z.testzip() is None" "$APK"
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Download AssetRipper 2.0.0
+        shell: bash
+        run: |
+          set -e
+          mkdir -p ar && cd ar
+          curl -sSL -m 600 https://github.com/AssetRipper/AssetRipper/releases/download/2.0.0/AssetRipper_linux_x64.tar.xz -o ar.tar.xz
+          tar -xf ar.tar.xz
+          chmod +x AssetRipper.GUI.Free
+
+      - name: Rip APK (AssetRipper headless + API)
+        shell: bash
+        run: |
+          set -e
+          cd ar
+          (nohup ./AssetRipper.GUI.Free --headless --port 18089 > ar-web.log 2>&1 &)
+          for i in $(seq 1 30); do
+            grep -q "Now listening" ar-web.log && break
+            sleep 5
+          done
+          grep -q "Now listening" ar-web.log
+          curl -sS -m 1800 -X POST --data-urlencode "Path=$GITHUB_WORKSPACE/${{ inputs.apk_base }}" http://127.0.0.1:18089/LoadFile -o /dev/null
+          echo "Load terkirim, tunggu processing..."
+          for i in $(seq 1 120); do
+            grep -q "Finished processing assets" ar-web.log && break
+            sleep 30
+          done
+          grep -q "Finished processing assets" ar-web.log
+          mkdir -p "$GITHUB_WORKSPACE/unity_out"
+          curl -sS -m 3600 -X POST --data-urlencode "Path=$GITHUB_WORKSPACE/unity_out" http://127.0.0.1:18089/Export/UnityProject -o /dev/null
+          ls "$GITHUB_WORKSPACE/unity_out"
+
+      - name: Download Godot 4.3
+        shell: bash
+        run: |
+          set -e
+          mkdir -p tools && cd tools
+          curl -sSL -m 600 https://github.com/godotengine/godot/releases/download/4.3-stable/Godot_v4.3-stable_linux.x86_64.zip -o godot.zip
+          python3 -c "import zipfile; zipfile.ZipFile('godot.zip').extractall('.')"
+          chmod +x Godot_v4.3-stable_linux.x86_64
+          ./Godot_v4.3-stable_linux.x86_64 --version
+
+      - name: Rakit project kerja (Unidot + driver)
+        shell: bash
+        run: |
+          set -e
+          W="$GITHUB_WORKSPACE/work/ffi_godot"
+          mkdir -p "$W/addons" "$W/unity_assets"
+          cp -r main/tools/headless_unidot "$W/addons/"
+          curl -sSL -m 300 https://github.com/V-Sekai/unidot_importer/archive/refs/heads/main.zip -o unidot.zip
+          python3 -c "import zipfile; zipfile.ZipFile('unidot.zip').extractall('ud')"
+          cp -r ud/unidot_importer-main "$W/addons/unidot_importer"
+          cp -r "$GITHUB_WORKSPACE/unity_out/ExportedProject/." "$W/unity_assets/"
+          cat > "$W/project.godot" <<'EOF'
+          config_version=5
+
+          [application]
+
+          config/name="FFI Godot"
+          run/main_scene=""
+          config/features=PackedStringArray("4.3", "GL Compatibility")
+
+          [editor_plugins]
+
+          enabled=PackedStringArray("headless_unidot")
+          EOF
+          find "$W/unity_assets" -name "*.meta" | wc -l
+          find "$W/unity_assets" -name "*.prefab" | wc -l
+
+      - name: Import headless (Unidot, full)
+        shell: bash
+        env:
+          FFI_UNITY_DIR: ${{ github.workspace }}/work/ffi_godot/unity_assets
+          FFI_DONE_MARKER: ${{ github.workspace }}/unidot_done.txt
+        run: |
+          set -e
+          cd tools
+          ./Godot_v4.3-stable_linux.x86_64 --headless --editor --path "$GITHUB_WORKSPACE/work/ffi_godot" --quit-after 400000 > "$GITHUB_WORKSPACE/unidot.log" 2>&1 || true
+          tail -n 30 "$GITHUB_WORKSPACE/unidot.log"
+          cat "$GITHUB_WORKSPACE/unidot_done.txt"
+
+      - name: Bungkus 2 output + Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG='${{ inputs.result_tag }}'
+          tar -czf ffi-godot.tar.gz -C work ffi_godot
+          tar -czf ffi-unity-source.tar.gz unity_out
+          ls -lh ffi-godot.tar.gz ffi-unity-source.tar.gz
+          gh release delete "$TAG" -y --cleanup-tag 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          gh release create "$TAG" --title "FFI Godot $TAG" --notes "Hasil convert FFI ke Godot (Unidot headless). Script C#/shader tidak ikut (batas tool)."
+          gh release upload "$TAG" ffi-godot.tar.gz ffi-unity-source.tar.gz
+          echo "RELEASE_OK https://github.com/${{ github.repository }}/releases/tag/$TAG"
