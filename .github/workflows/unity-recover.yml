@@ -1,0 +1,138 @@
+name: Unity Recover (AssetRipper saja)
+
+on:
+  workflow_dispatch:
+    inputs:
+      apk_base:
+        description: "Nama file game (tanpa .part). Mode link: nama hasil download."
+        default: "game.apk"
+        required: false
+        type: string
+      game_url:
+        description: "Link download langsung (opsional). Kalau diisi, runner download sendiri."
+        required: false
+        type: string
+      inbox_branch:
+        description: "Branch tempat pecahan file game"
+        default: "unity-inbox"
+        required: false
+        type: string
+      result_tag:
+        description: "Tag release hasil"
+        default: "unity-recover"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    name: Rip Unity (${{ inputs.apk_base }})
+    steps:
+      - name: Ambil pecahan game dari inbox
+        if: inputs.game_url == ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.inbox_branch }}
+          path: inbox
+          fetch-depth: 1
+
+      - name: Download dari link (mode tanpa upload)
+        if: inputs.game_url != ''
+        shell: bash
+        run: |
+          set -e
+          URL='${{ inputs.game_url }}'
+          GAME='${{ inputs.apk_base }}'
+          if [[ "$URL" != https://* && "$URL" != http://* ]]; then
+            echo "URL harus diawali http(s) dan langsung ke file."
+            exit 1
+          fi
+          [ -n "$GAME" ] || (echo "apk_base wajib diisi untuk mode link."; exit 1)
+          echo "Download langsung dari URL..."
+          curl -L --fail --retry 2 --max-time 3600 -o "$GAME" "$URL"
+          ls -lh "$GAME"
+
+      - name: Sambung pecahan + validasi
+        if: inputs.game_url == ''
+        shell: bash
+        run: |
+          set -e
+          GAME='${{ inputs.apk_base }}'
+          PARTS=(inbox/"$GAME".part*)
+          if [ ! -e "${PARTS[0]}" ]; then
+            echo "BELUM ADA: pecahan $GAME.part* tidak ada di branch ${{ inputs.inbox_branch }}."
+            exit 1
+          fi
+          cat inbox/"$GAME".part* > "$GAME"
+          ls -lh "$GAME"
+          python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); n=z.namelist(); print('entries=%d bad=%s' % (len(n), z.testzip())); assert len(n) > 10 and z.testzip() is None" "$GAME"
+
+      - name: Validasi file link + ekstrak XAPK
+        if: inputs.game_url != ''
+        shell: bash
+        run: |
+          set -e
+          GAME='${{ inputs.apk_base }}'
+          ls -lh "$GAME"
+          python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); n=z.namelist(); print('entries=%d bad=%s' % (len(n), z.testzip())); assert len(n) > 0 and z.testzip() is None" "$GAME"
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Rip + export UnityProject
+        shell: bash
+        run: |
+          set -e
+          mkdir -p ar && cd ar
+          curl -sSL -m 600 https://github.com/AssetRipper/AssetRipper/releases/download/2.0.0/AssetRipper_linux_x64.tar.xz -o ar.tar.xz
+          tar -xf ar.tar.xz
+          chmod +x AssetRipper.GUI.Free
+          (nohup ./AssetRipper.GUI.Free --headless --port 18089 > ar-web.log 2>&1 &)
+          for i in $(seq 1 30); do
+            grep -q "Now listening" ar-web.log && break
+            sleep 5
+          done
+          grep -q "Now listening" ar-web.log
+          GAME='${{ inputs.apk_base }}'
+          SRC="$GITHUB_WORKSPACE/$GAME"
+          if [[ "$GAME" == *.xapk ]]; then
+            python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall('xapk_in')" "$SRC"
+            SRC=$(python3 -c "import os; fs=[os.path.join('xapk_in',f) for f in os.listdir('xapk_in') if f.endswith('.apk')]; print(max(fs, key=os.path.getsize))")
+            SRC="$GITHUB_WORKSPACE/ar/$SRC"
+          fi
+          echo "Rip: $SRC"
+          curl -sS -m 1800 -X POST --data-urlencode "Path=$SRC" http://127.0.0.1:18089/LoadFile -o /dev/null
+          echo "Load terkirim, tunggu processing..."
+          for i in $(seq 1 120); do
+            grep -q "Finished processing assets" ar-web.log && break
+            sleep 30
+          done
+          grep -q "Finished processing assets" ar-web.log
+          grep -a -o "Decompiled scripts:[ ]*[0-9]*" ar-web.log | tail -n 1 || true
+          grep -a -o "Extracted [0-9]* files[^!]*" ar-web.log | tail -n 1 || true
+          mkdir -p "$GITHUB_WORKSPACE/unity_out"
+          curl -sS -m 3600 -X POST --data-urlencode "Path=$GITHUB_WORKSPACE/unity_out" http://127.0.0.1:18089/Export/UnityProject -o /dev/null
+          ls "$GITHUB_WORKSPACE/unity_out"
+
+      - name: Bungkus + Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          TAG='${{ inputs.result_tag }}'
+          BASE='${{ inputs.apk_base }}'
+          BASE="${BASE%.*}"
+          tar -czf "$BASE-unity.tar.gz" unity_out
+          ls -lh "$BASE-unity.tar.gz"
+          gh release delete "$TAG" -y --cleanup-tag 2>/dev/null || true
+          git push origin ":refs/tags/$TAG" 2>/dev/null || true
+          gh release create "$TAG" --title "Unity recover $TAG" --notes "Hasil rip Unity (AssetRipper). Buka di Unity Editor."
+          gh release upload "$TAG" "$BASE-unity.tar.gz"
+          echo "RELEASE_OK https://github.com/${{ github.repository }}/releases/tag/$TAG"
