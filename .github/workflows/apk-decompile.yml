@@ -1,0 +1,58 @@
+name: APK Decompile (jadx)
+on:
+  workflow_dispatch:
+    inputs:
+      apk_asset:
+        description: "Nama file APK (hasil download dari link)"
+        required: true
+        type: string
+      apk_url:
+        description: "Link download langsung http(s) ke file APK"
+        required: true
+        type: string
+      result_tag:
+        description: "Tag release hasil"
+        default: "apk-decompiled"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  decompile:
+    runs-on: ubuntu-latest
+    name: Decompile ${{ inputs.apk_asset }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Download JADX CLI
+        run: |
+          set -e
+          curl -fL -o jadx.zip https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip
+          unzip -q jadx.zip -d jadx-bin
+
+      - name: Download APK
+        run: |
+          set -e
+          curl -fL -o "${{ inputs.apk_asset }}" "${{ inputs.apk_url }}"
+          ls -lh "${{ inputs.apk_asset }}"
+
+      - name: Decompile
+        run: |
+          set -e
+          mkdir -p out
+          ./jadx-bin/bin/jadx -d out "${{ inputs.apk_asset }}"
+          echo "--- hasil ---"
+          du -sh out
+          find out -maxdepth 2 | head -n 20
+
+      - name: Zip + upload release
+        run: |
+          set -e
+          BASE="${{ inputs.apk_asset }}"
+          BASE="${BASE%.apk}"
+          cd out && zip -qr "../${BASE}-decompiled.zip" . && cd ..
+          ls -lh "${BASE}-decompiled.zip"
+          gh release view "${{ inputs.result_tag }}" >/dev/null 2>&1 || gh release create "${{ inputs.result_tag }}" --title "${{ inputs.result_tag }}" --notes "Hasil decompile ${{ inputs.apk_asset }} via jadx 1.5.6"
+          gh release upload "${{ inputs.result_tag }}" "${BASE}-decompiled.zip" --clobber
