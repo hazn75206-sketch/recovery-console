@@ -42,7 +42,9 @@ jobs:
         run: |
           set -e
           mkdir -p out
-          ./jadx-bin/bin/jadx -d out "${{ inputs.apk_asset }}"
+          # jadx exit 3 = selesai dengan sebagian error class (wajar) -> lanjut selama output ada
+          ./jadx-bin/bin/jadx -d out "${{ inputs.apk_asset }}" || [ $? -eq 3 ]
+          test -n "$(ls -A out)"
           echo "--- hasil ---"
           du -sh out
           find out -maxdepth 2 | head -n 20
