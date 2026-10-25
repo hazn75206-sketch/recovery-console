@@ -172,7 +172,9 @@ jobs:
             fi
             echo "Dipecah menjadi $EXPECT_PARTS bagian 20 MiB (batas file GitHub)."
           fi
-          rm -f -- "$SRC"   # hemat disk runner
+          # File asli dipertahankan sebentar untuk salinan utuh di Release (maks 2 GiB per file);
+          # kalau terlalu besar untuk Release, hapus sekarang supaya disk runner cukup.
+          if (( FILE_SIZE > 2000 * 1024 * 1024 )); then rm -f -- "$SRC"; fi
 
           # Dorong bertahap ke branch sementara; satu push dibatasi ukurannya oleh GitHub.
           mapfile -t FILES < <(ls -1A | grep -v '^\.git$' | LC_ALL=C sort)
@@ -219,3 +221,35 @@ jobs:
             echo "- Recovery TIDAK dijalankan. Jalankan dari tab Recovery."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Selesai. File tersimpan dan terverifikasi di branch pck-inbox."
+
+      - name: Intact copy to Release (original file, not parts)
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG=inbox-files
+          SRC="$RUNNER_TEMP/dl/$FILE_NAME"
+          if [[ ! -f "$SRC" ]]; then
+            echo "::warning::File $((FILE_SIZE / 1048576)) MiB lebih besar dari batas Release (2 GiB per file). Hanya tersedia sebagai bagian di pck-inbox."
+            exit 0
+          fi
+          if (( FILE_SIZE <= 90 * 1024 * 1024 )); then
+            echo "File kecil sudah tersimpan utuh di pck-inbox; salinan Release tidak diperlukan."
+            exit 0
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Inbox (file utuh)" \
+              --notes "Salinan utuh file dari Download to Inbox. Hanya file terakhir yang disimpan." --latest=false
+          # Hanya satu file terakhir disimpan.
+          for A in $(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'); do
+            gh release delete-asset "$TAG" "$A" --repo "$GITHUB_REPOSITORY" --yes
+          done
+          gh release upload "$TAG" "$SRC" --repo "$GITHUB_REPOSITORY" --clobber
+          rm -f -- "$SRC"
+          {
+            echo ""
+            echo "- Salinan utuh (file asli): Release \`$TAG\` -> \`$FILE_NAME\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Salinan utuh tersedia di Release $TAG."
