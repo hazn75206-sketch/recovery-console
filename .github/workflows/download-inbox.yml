@@ -49,7 +49,7 @@ jobs:
           test -s "$RUNNER_TEMP/$NAME"
           ls -lh "$RUNNER_TEMP/$NAME"
 
-      - name: Prepare inbox branch with 20 MiB chunks
+      - name: Prepare inbox branch
         uses: actions/checkout@v4
         with:
           ref: main
@@ -67,11 +67,19 @@ jobs:
           git checkout -B pck-inbox
           # Inbox branch is dedicated to downloaded/uploaded game files.
           git rm -r --ignore-unmatch .
-          mkdir -p "$RUNNER_TEMP/inbox-parts"
-          split -b 20M -d -a 3 --numeric-suffixes=1 \
-            "$RUNNER_TEMP/$FILE_NAME" "$RUNNER_TEMP/inbox-parts/$FILE_NAME.part"
-          cp "$RUNNER_TEMP/inbox-parts/"* .
-          echo "Prepared inbox chunks:"
+          SIZE=$(stat -c '%s' "$RUNNER_TEMP/$FILE_NAME")
+          if (( SIZE <= 90 * 1024 * 1024 )); then
+            # Keep smaller files intact under their original filename.
+            cp "$RUNNER_TEMP/$FILE_NAME" "./$FILE_NAME"
+            echo "Stored intact file: $FILE_NAME"
+          else
+            # GitHub blocks individual Git files around 100 MiB; store large files as parts.
+            mkdir -p "$RUNNER_TEMP/inbox-parts"
+            split -b 20M -d -a 3 --numeric-suffixes=1 \
+              "$RUNNER_TEMP/$FILE_NAME" "$RUNNER_TEMP/inbox-parts/$FILE_NAME.part"
+            cp "$RUNNER_TEMP/inbox-parts/"* .
+            echo "Large file stored as 20 MiB parts due to GitHub file-size limits:"
+          fi
           ls -lh
           git add -A
           if git diff --cached --quiet; then
@@ -80,4 +88,4 @@ jobs:
           fi
           git commit -m "inbox: download $FILE_NAME"
           git push origin HEAD:pck-inbox --force
-          echo "Download finished. File is stored as 20 MiB parts in branch pck-inbox."
+          echo "Download finished. File is stored in branch pck-inbox (intact if 90 MiB or smaller; larger files are stored as parts because of GitHub file-size limits)."
