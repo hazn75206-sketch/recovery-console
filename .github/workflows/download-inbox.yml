@@ -1,4 +1,9 @@
 name: Download to Inbox
+run-name: Download to Inbox - ${{ inputs.file_name }}
+
+# Workflow ini HANYA mengunduh file ke branch pck-inbox.
+# Tidak ada langkah recovery/dekompilasi di sini, dan tidak ada yang memanggil
+# recover-official.yml. Recovery dijalankan terpisah dari tab Recovery.
 
 on:
   workflow_dispatch:
@@ -15,77 +20,188 @@ on:
 permissions:
   contents: write
 
+# Satu download pada satu waktu, karena branch inbox hanya menyimpan satu file.
+concurrency:
+  group: download-inbox
+  cancel-in-progress: false
+
 jobs:
   download:
+    name: Download ${{ inputs.file_name }}
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - name: Validate inputs and download on GitHub runner
+      - name: Validate inputs
         env:
           DOWNLOAD_URL: ${{ inputs.download_url }}
           INPUT_NAME: ${{ inputs.file_name }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "$DOWNLOAD_URL" != https://* && "$DOWNLOAD_URL" != http://* ]]; then
-            echo "URL must start with http:// or https://"
+          export LC_ALL=C
+          if [[ ! "$DOWNLOAD_URL" =~ ^https?://[^[:space:]]+$ ]]; then
+            echo "::error::URL tidak valid. Harus diawali http:// atau https:// dan tanpa spasi."
             exit 1
           fi
-          NAME="$(basename -- "$INPUT_NAME")"
-          if [[ "$NAME" != "$INPUT_NAME" || "$NAME" == "." || "$NAME" == ".." ]]; then
-            echo "Filename must not contain a directory path."
+          NAME="$INPUT_NAME"
+          NAME_RE='^[A-Za-z0-9_(+][A-Za-z0-9._()+ -]*$'
+          if [[ ${#NAME} -gt 120 || ! "$NAME" =~ $NAME_RE ]]; then
+            echo "::error::Nama file tidak valid. Hanya huruf, angka, spasi, titik, _, -, (, ), + dan tidak boleh diawali titik atau minus (maks 120 karakter)."
             exit 1
           fi
-          EXT="${NAME##*.}"
-          EXT="$(printf '%s' "$EXT" | tr '[:upper:]' '[:lower:]')"
+          EXT="$(printf '%s' "${NAME##*.}" | tr '[:upper:]' '[:lower:]')"
           case "$EXT" in
             pck|exe|apk|zip) ;;
-            *) echo "Unsupported extension: $EXT (use pck, exe, apk, or zip)."; exit 1 ;;
+            *) echo "::error::Ekstensi tidak didukung: .$EXT (pakai pck, exe, apk, atau zip)."; exit 1 ;;
           esac
           echo "FILE_NAME=$NAME" >> "$GITHUB_ENV"
-          echo "Downloading $NAME on GitHub runner..."
-          curl --fail --location --show-error --retry 3 --retry-all-errors --connect-timeout 30 --max-time 7200 \
-            --output "$RUNNER_TEMP/$NAME" "$DOWNLOAD_URL"
-          test -s "$RUNNER_TEMP/$NAME"
-          ls -lh "$RUNNER_TEMP/$NAME"
+          echo "Nama file valid: $NAME"
 
-      - name: Prepare inbox branch
-        uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Replace inbox contents and push chunks
+      - name: Download file on GitHub runner
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOWNLOAD_URL: ${{ inputs.download_url }}
         shell: bash
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -B pck-inbox
-          # Inbox branch is dedicated to downloaded/uploaded game files.
-          git rm -r --ignore-unmatch .
-          SIZE=$(stat -c '%s' "$RUNNER_TEMP/$FILE_NAME")
-          if (( SIZE <= 90 * 1024 * 1024 )); then
-            # Keep smaller files intact under their original filename.
-            cp "$RUNNER_TEMP/$FILE_NAME" "./$FILE_NAME"
-            echo "Stored intact file: $FILE_NAME"
-          else
-            # GitHub blocks individual Git files around 100 MiB; store large files as parts.
-            mkdir -p "$RUNNER_TEMP/inbox-parts"
-            split -b 20M -d -a 3 --numeric-suffixes=1 \
-              "$RUNNER_TEMP/$FILE_NAME" "$RUNNER_TEMP/inbox-parts/$FILE_NAME.part"
-            cp "$RUNNER_TEMP/inbox-parts/"* .
-            echo "Large file stored as 20 MiB parts due to GitHub file-size limits:"
-          fi
-          ls -lh
-          git add -A
-          if git diff --cached --quiet; then
-            echo "No inbox changes to commit."
+          export LC_ALL=C
+          MAX_MIB=1800
+          mkdir -p "$RUNNER_TEMP/dl"
+          OUT="$RUNNER_TEMP/dl/$FILE_NAME"
+          echo "Mengunduh $FILE_NAME di runner GitHub (HP tidak ikut mengunduh)..."
+          RC=0
+          curl --fail --location --silent --show-error \
+            --proto '=http,https' --proto-redir '=http,https' --max-redirs 10 \
+            --retry 3 --retry-all-errors --connect-timeout 30 --max-time 7200 \
+            --user-agent 'Mozilla/5.0 (compatible; RecoveryConsole/1.0)' \
+            --write-out 'http_code=%{http_code}\ncontent_type=%{content_type}\nredirects=%{num_redirects}\nbytes=%{size_download}\n' \
+            --output "$OUT" "$DOWNLOAD_URL" || RC=$?
+          if [[ $RC -ne 0 ]]; then
+            case "$RC" in
+              22) MSG="Server menolak (HTTP error, mis. 403/404). Link kedaluwarsa, butuh login/cookie, atau memblokir runner." ;;
+              6)  MSG="Nama host tidak ditemukan (DNS). Cek penulisan URL." ;;
+              7)  MSG="Tidak bisa terhubung ke server." ;;
+              28) MSG="Waktu habis (timeout) saat mengunduh." ;;
+              35|51|58|60) MSG="Gagal TLS/sertifikat saat terhubung ke server." ;;
+              47) MSG="Terlalu banyak redirect." ;;
+              18|56) MSG="Unduhan terputus sebelum selesai." ;;
+              *)  MSG="curl gagal dengan kode $RC." ;;
+            esac
+            echo "::error::Download gagal: $MSG"
             exit 1
           fi
-          git commit -m "inbox: download $FILE_NAME"
-          git push origin HEAD:pck-inbox --force
-          echo "Download finished. File is stored in branch pck-inbox (intact if 90 MiB or smaller; larger files are stored as parts because of GitHub file-size limits)."
+
+          SIZE=$(stat -c '%s' "$OUT")
+          if [[ $SIZE -eq 0 ]]; then
+            echo "::error::File hasil download kosong (0 byte)."
+            exit 1
+          fi
+          if (( SIZE > MAX_MIB * 1024 * 1024 )); then
+            echo "::error::File $((SIZE / 1048576)) MiB melebihi batas ${MAX_MIB} MiB (batas ukuran push GitHub)."
+            exit 1
+          fi
+
+          # Link halaman web (bukan file) biasanya menghasilkan HTML.
+          HEADTXT="$(head -c 1024 "$OUT" | tr -d '\0')"
+          if grep -qiE '<!doctype html|<html' <<< "$HEADTXT"; then
+            echo "::error::Yang terunduh adalah halaman HTML, bukan file game. Pakai direct download URL (bukan halaman web / Google Drive / halaman Game Jolt)."
+            exit 1
+          fi
+
+          # Cek tanda pengenal file; hanya peringatan, file tetap disimpan apa adanya.
+          MAGIC="$(head -c 4 "$OUT" | od -An -tx1 | tr -d ' \n')"
+          EXT="$(printf '%s' "${FILE_NAME##*.}" | tr '[:upper:]' '[:lower:]')"
+          case "$EXT" in
+            zip|apk) [[ "$MAGIC" == 504b* ]] || echo "::warning::File .$EXT tidak diawali tanda ZIP (PK). Mungkin bukan arsip yang valid." ;;
+            exe)     [[ "$MAGIC" == 4d5a* ]] || echo "::warning::File .exe tidak diawali tanda MZ. Mungkin bukan executable yang valid." ;;
+            pck)     [[ "$MAGIC" == 47445043 ]] || echo "::warning::File .pck tidak diawali GDPC. Mungkin bukan paket Godot standalone." ;;
+          esac
+
+          SHA="$(sha256sum "$OUT" | cut -d' ' -f1)"
+          {
+            echo "FILE_SIZE=$SIZE"
+            echo "FILE_SHA256=$SHA"
+          } >> "$GITHUB_ENV"
+          ls -lh "$OUT"
+          echo "sha256=$SHA"
+
+      - name: Checkout repo (for push credentials)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Store file in branch pck-inbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          SRC="$RUNNER_TEMP/dl/$FILE_NAME"
+          PART_BYTES=$((20 * 1024 * 1024))   # sama dengan CHUNK 20 MiB di index.html
+          INTACT_MAX=$((90 * 1024 * 1024))   # GitHub menolak file >100 MiB
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Branch inbox dibuat yatim (tanpa riwayat main dan tanpa file workflow)
+          # supaya hanya berisi file unduhan.
+          git checkout --orphan pck-inbox
+          git rm -rf --quiet --ignore-unmatch .
+
+          if (( FILE_SIZE <= INTACT_MAX )); then
+            cp -- "$SRC" "./$FILE_NAME"
+            EXPECT_PARTS=0
+            echo "Disimpan utuh: $FILE_NAME"
+          else
+            # Format bagian: NAMA.part001, NAMA.part002, ... (sama dengan upload dari web).
+            # recover-official.yml menyambungnya lagi dengan cat NAMA.part*.
+            split -b "$PART_BYTES" -d -a 3 --numeric-suffixes=1 -- "$SRC" "./$FILE_NAME.part"
+            EXPECT_PARTS=$(( (FILE_SIZE + PART_BYTES - 1) / PART_BYTES ))
+            ACTUAL_PARTS=$(ls -1 -- "./$FILE_NAME".part* | wc -l)
+            if [[ "$ACTUAL_PARTS" != "$EXPECT_PARTS" ]]; then
+              echo "::error::Jumlah bagian tidak cocok: $ACTUAL_PARTS dari $EXPECT_PARTS."
+              exit 1
+            fi
+            # Pastikan sambungan bagian identik dengan file asli.
+            JOINED_SHA="$(cat -- "./$FILE_NAME".part* | sha256sum | cut -d' ' -f1)"
+            if [[ "$JOINED_SHA" != "$FILE_SHA256" ]]; then
+              echo "::error::Sambungan bagian tidak identik dengan file asli."
+              exit 1
+            fi
+            echo "Disimpan sebagai $EXPECT_PARTS bagian 20 MiB (batas file GitHub)."
+          fi
+
+          git add -A
+          if git diff --cached --quiet; then
+            echo "::error::Tidak ada perubahan untuk di-commit."
+            exit 1
+          fi
+          git commit --quiet -m "inbox: download $FILE_NAME"
+          git push --force origin pck-inbox
+
+          # File baru dianggap tersimpan hanya jika branch remote benar-benar menunjuk commit ini.
+          LOCAL="$(git rev-parse HEAD)"
+          REMOTE="$(git ls-remote origin refs/heads/pck-inbox | cut -f1)"
+          if [[ "$LOCAL" != "$REMOTE" ]]; then
+            echo "::error::Verifikasi push gagal: pck-inbox di GitHub tidak sama dengan commit lokal."
+            exit 1
+          fi
+          TREE_BYTES="$(git ls-tree -r -l HEAD | awk '{s += $4} END {print s + 0}')"
+          if [[ "$TREE_BYTES" != "$FILE_SIZE" ]]; then
+            echo "::error::Ukuran di branch ($TREE_BYTES) tidak sama dengan file unduhan ($FILE_SIZE)."
+            exit 1
+          fi
+
+          {
+            echo "### Download to Inbox: sukses"
+            echo ""
+            echo "- File: \`$FILE_NAME\`"
+            echo "- Ukuran: $FILE_SIZE byte ($((FILE_SIZE / 1048576)) MiB)"
+            echo "- SHA-256: \`$FILE_SHA256\`"
+            if (( EXPECT_PARTS > 0 )); then
+              echo "- Disimpan sebagai $EXPECT_PARTS bagian (\`$FILE_NAME.part001\` ...)"
+            else
+              echo "- Disimpan utuh"
+            fi
+            echo "- Branch: \`pck-inbox\` (commit \`${LOCAL:0:7}\`)"
+            echo "- Recovery TIDAK dijalankan. Jalankan dari tab Recovery."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "Selesai. File tersimpan dan terverifikasi di branch pck-inbox."
