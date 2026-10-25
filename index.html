@@ -60,6 +60,21 @@
     font-size: 16px; padding: 0 8px;
   }
   .tab[aria-selected="true"] { background: #e0a100; border-color: #e0a100; color: #161a1f; font-weight: 600; }
+  #activity { margin: 0 0 12px; }
+  #activity .act {
+    display: flex; align-items: center; gap: 10px; width: 100%; box-sizing: border-box;
+    min-height: 44px; margin-bottom: 6px; padding: 8px 12px; text-align: left;
+    background: #2a2208; border: 1px solid #e0a100; border-radius: 10px; color: #f2d98a; font-size: 15px;
+  }
+  #activity .act b { color: #fff; }
+  .pulse, .tab .dot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    background: #e0a100; flex: 0 0 auto; animation: pulse 1.2s ease-in-out infinite;
+  }
+  .tab .dot { margin-left: 8px; }
+  .tab[aria-selected="true"] .dot { background: #161a1f; }
+  @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.7); } }
+  @media (prefers-reduced-motion: reduce) { .pulse, .tab .dot { animation: none; } }
   footer { font-size: 13px; color: #b9bec6; margin-top: 18px; }
   footer a { color: #e8eaed; }
 </style>
@@ -69,9 +84,11 @@
   <h1>Recovery Console</h1>
   <p class="sub">Dua fungsi terpisah: Recovery (jalankan recovery dari file) dan Download to Inbox (unduh file ke GitHub, tanpa recovery).</p>
 
+  <div id="activity" role="status" aria-live="polite" hidden></div>
+
   <div class="tabs" role="tablist" aria-label="Fungsi utama">
-    <button type="button" role="tab" id="tab-recovery" class="tab" aria-selected="true" aria-controls="panel-recovery" tabindex="0">Recovery</button>
-    <button type="button" role="tab" id="tab-download" class="tab" aria-selected="false" aria-controls="panel-download" tabindex="-1">Download to Inbox</button>
+    <button type="button" role="tab" id="tab-recovery" class="tab" aria-selected="true" aria-controls="panel-recovery" tabindex="0">Recovery<span class="dot" id="dot-recovery" hidden></span></button>
+    <button type="button" role="tab" id="tab-download" class="tab" aria-selected="false" aria-controls="panel-download" tabindex="-1">Download to Inbox<span class="dot" id="dot-download" hidden></span></button>
   </div>
 
   <!-- ========== TAB 1: RECOVERY ========== -->
@@ -179,6 +196,8 @@ var triggerTime = 0;
 var lastParts = 1;
 var uploadedName = null;
 var resultBase = null;
+var uploading = false;
+var upStart = 0;
 
 function $(id) { return document.getElementById(id); }
 
@@ -319,6 +338,7 @@ function readKeyOrNull() {
 // Kirim dispatch lalu pantau run yang sama. Dipakai mode upload maupun link.
 function startRecovery(inputs, base) {
   resultBase = base;
+  runId = null;
   triggerTime = Date.now();
   setStatus("Memerintah runner...");
   api("POST", "/actions/workflows/" + WORKFLOW + "/dispatches", {
@@ -357,6 +377,7 @@ $("btnUpload").addEventListener("click", function () {
     return;
   }
   var name = baseName(f.name);
+  uploading = true; upStart = Date.now();
   setStatus("Menyiapkan inbox...");
   ensureBranch().then(function () { return cleanInbox(name); })
     .then(function () {
@@ -368,12 +389,13 @@ $("btnUpload").addEventListener("click", function () {
       });
     })
     .then(function (parts) {
+      uploading = false;
       lastParts = parts;
       uploadedName = name;
       var extra = parts > 1 ? " (" + parts + " bagian)" : "";
       setStatus('<span class="ok">Upload selesai:</span> ' + name + extra + ". Lanjut tekan Jalankan recovery.");
     })
-    .catch(function (e) { setStatus('<span class="err">Gagal upload.</span> ' + e.message); });
+    .catch(function (e) { uploading = false; setStatus('<span class="err">Gagal upload.</span> ' + e.message); });
 });
 
 $("btnRun").addEventListener("click", function () {
@@ -583,7 +605,7 @@ function dlPoll() {
     dlRunId = run.id;
     if (run.status !== "completed") {
       var label = run.status === "in_progress"
-        ? "Download berjalan di runner GitHub. Halaman ini boleh dibiarkan terbuka."
+        ? "Download berjalan di runner GitHub. Halaman boleh ditutup; status dilanjutkan otomatis saat dibuka lagi."
         : "Antre. Runner disiapkan GitHub.";
       setDlStatus('<span class="warn">' + label + '</span> ' + dlLogLink(run));
       return;
@@ -620,8 +642,20 @@ function dlVerify(run) {
       return;
     }
     $("inboxRecName").value = dlName;
-    setDlStatus('<span class="ok">Selesai.</span> <b>' + esc(dlName) + '</b> ' + detail + ' di branch ' + INBOX_BRANCH +
-      '. Recovery tidak dijalankan. Untuk recovery, buka tab Recovery, section 4 (nama file sudah terisi). ' + dlLogLink(run));
+    var done = function (rel) {
+      // GitHub mengganti spasi pada nama aset dengan titik.
+      var want = dlName.replace(/ /g, ".");
+      var asset = null;
+      if (rel) { (rel.assets || []).forEach(function (a) { if (a.name === want || a.name === dlName) { asset = a; } }); }
+      var full = asset
+        ? ' <a href="' + esc(asset.browser_download_url) + '">Download file utuh asli (' + (asset.size / 1048576).toFixed(0) + ' MiB)</a>.'
+        : (parts.length ? ' Salinan utuh di Release tidak tersedia (file di atas 2 GiB atau belum selesai).' : '');
+      setDlStatus('<span class="ok">Selesai.</span> <b>' + esc(dlName) + '</b> ' + detail + ' di branch ' + INBOX_BRANCH +
+        '.' + full + ' Recovery tidak dijalankan. Untuk recovery, buka tab Recovery, section 4 (nama file sudah terisi). ' + dlLogLink(run));
+    };
+    if (parts.length) {
+      api("GET", "/releases/tags/inbox-files").then(done, function () { done(null); });
+    } else { done(null); }
   }).catch(function (e) {
     setDlStatus('<span class="warn">Workflow hijau, tetapi isi branch belum bisa diperiksa dari sini.</span> ' + esc(e.message) + ' ' + dlLogLink(run));
   });
@@ -658,6 +692,124 @@ $("btnRunInbox").addEventListener("click", function () {
   );
 });
 
+// ============== INDIKATOR AKTIVITAS ==============
+// Banner di atas semua tab: tampil selama ada upload, recovery, atau download berjalan.
+function fmtElapsed(ms) {
+  var s = Math.max(0, Math.floor(ms / 1000)), m = Math.floor(s / 60);
+  return m + " mnt " + String(s % 60).padStart(2, "0") + " dtk";
+}
+
+function refreshActivity() {
+  var items = [];
+  if (uploading) {
+    items.push({ tab: "recovery", text: "<b>Upload ke inbox</b> sedang berjalan", ms: Date.now() - upStart });
+  }
+  if (pollTimer) {
+    items.push({ tab: "recovery", text: "<b>Recovery</b> sedang berjalan", ms: Date.now() - triggerTime });
+  }
+  if (dlPollTimer || $("btnDownloadInbox").disabled) {
+    items.push({ tab: "download", text: "<b>Download</b> sedang berjalan", ms: Date.now() - dlStart });
+  }
+  var box = $("activity");
+  box.hidden = items.length === 0;
+  box.innerHTML = items.map(function (it) {
+    return '<button type="button" class="act" data-tab="' + it.tab + '"><span class="pulse"></span><span>' +
+      it.text + ' (' + fmtElapsed(it.ms) + '). Ketuk untuk lihat.</span></button>';
+  }).join("");
+  TABS.forEach(function (t) {
+    $("dot-" + t).hidden = !items.some(function (it) { return it.tab === t; });
+  });
+  var base = document.title.replace(/^\u25CF /, "");
+  document.title = items.length ? "\u25CF " + base : base;
+}
+
+$("activity").addEventListener("click", function (ev) {
+  var b = ev.target.closest ? ev.target.closest("[data-tab]") : null;
+  if (b) { showTab(b.getAttribute("data-tab"), false); }
+});
+setInterval(refreshActivity, 1000);
+
+// ====== LANJUTKAN SETELAH HALAMAN DIBUKA LAGI ======
+// Sumber kebenaran adalah GitHub, bukan memori halaman: saat dibuka, cek run yang masih berjalan.
+function isActiveRun(r) { return r.status !== "completed"; }
+
+function agoText(iso) {
+  var m = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (m < 1) { return "baru saja"; }
+  if (m < 60) { return m + " menit lalu"; }
+  var h = Math.round(m / 60);
+  return h < 48 ? h + " jam lalu" : Math.round(h / 24) + " hari lalu";
+}
+
+function resumeDownload() {
+  return listDlRuns().then(function (runs) {
+    var active = null;
+    for (var i = 0; i < runs.length; i++) { if (isActiveRun(runs[i])) { active = runs[i]; break; } }
+    var title = function (r) { return String(r.display_title || "").replace(/^Download to Inbox - /, ""); };
+    if (active) {
+      dlRunId = active.id;
+      dlKnown = {};
+      dlStart = new Date(active.created_at).getTime();
+      dlName = title(active);
+      if (dlName) { $("inboxName").value = dlName; dlNameEdited = true; }
+      setDlBusy(true);
+      setDlStatus('<span class="warn">Download masih berjalan.</span> Dilanjutkan otomatis setelah halaman dibuka lagi. ' + dlLogLink(active));
+      dlPollTimer = setInterval(dlPoll, DL_POLL_MS);
+      dlPoll();
+      return;
+    }
+    var last = runs[0];
+    if (!last) { return; }
+    dlName = title(last);
+    if (last.conclusion === "success" && dlName && dlName !== String(last.display_title)) { dlVerify(last); }
+    else if (last.conclusion === "failure") { dlExplainFailure(last); }
+    else { setDlStatus("Download terakhir: " + esc(last.conclusion || last.status) + " (" + agoText(last.created_at) + "). " + dlLogLink(last)); }
+  });
+}
+
+// Nama job "Recover NAMA" dipakai untuk mengetahui file hasil tanpa mengubah recover-official.yml.
+function baseFromRun(run) {
+  return api("GET", "/actions/runs/" + run.id + "/jobs").then(function (d) {
+    var j = (d.jobs || [])[0];
+    var m = j && /^Recover (.+)$/.exec(j.name);
+    return m ? m[1].replace(/\.[^.]+$/, "") : null;
+  }).catch(function () { return null; });
+}
+
+function resumeRecovery() {
+  return api("GET", "/actions/workflows/" + WORKFLOW + "/runs?per_page=5").then(function (d) {
+    var runs = d.workflow_runs || [];
+    var active = null;
+    for (var i = 0; i < runs.length; i++) { if (isActiveRun(runs[i])) { active = runs[i]; break; } }
+    if (active) {
+      return baseFromRun(active).then(function (base) {
+        resultBase = base;
+        runId = active.id;
+        triggerTime = new Date(active.created_at).getTime();
+        $("btnCancel").disabled = false;
+        setStatus('<span class="warn">Recovery masih berjalan.</span> Dilanjutkan otomatis setelah halaman dibuka lagi. <a href="' + esc(active.html_url) + '">Lihat log live</a>');
+        pollTimer = setInterval(poll, POLL_MS);
+        poll();
+      });
+    }
+    var last = runs[0];
+    if (!last) { return; }
+    if (last.conclusion === "success") {
+      return baseFromRun(last).then(function (base) {
+        if (!base) { return; }
+        resultBase = base;
+        fetchResult();
+      });
+    }
+    setStatus("Recovery terakhir: " + esc(last.conclusion || last.status) + " (" + agoText(last.created_at) + '). <a href="' + esc(last.html_url) + '">Lihat log</a>');
+  });
+}
+
+if (tokenReady()) {
+  resumeRecovery().catch(function () { /* status tetap default */ });
+  resumeDownload().catch(function () { /* status tetap default */ });
+}
+
 (function () {
   if (location.hash === "#download") { showTab("download", false); }
 })();
@@ -684,7 +836,10 @@ $("btnRunUrl").addEventListener("click", function () {
 
 // Cari run yang lahir sesudah tombol ditekan, supaya tidak salah baca run lama.
 function poll() {
-  api("GET", "/actions/workflows/" + WORKFLOW + "/runs?per_page=5").then(function (data) {
+  var req = runId
+    ? api("GET", "/actions/runs/" + runId).then(function (r) { return { workflow_runs: [r] }; })
+    : api("GET", "/actions/workflows/" + WORKFLOW + "/runs?per_page=5");
+  req.then(function (data) {
     var runs = data.workflow_runs || [];
     var mine = null;
     for (var i = 0; i < runs.length; i++) {
@@ -695,7 +850,7 @@ function poll() {
     if (mine.status === "queued") {
       setStatus('<span class="warn">Antre.</span> Runner Windows disiapkan GitHub. <a href="' + mine.html_url + '">Lihat run</a>');
     } else if (mine.status === "in_progress") {
-      setStatus('<span class="warn">Recovery jalan.</span> Jangan tutup halaman ini. <a href="' + mine.html_url + '">Lihat log live</a>');
+      setStatus('<span class="warn">Recovery jalan.</span> Halaman boleh ditutup; status dilanjutkan otomatis saat dibuka lagi. <a href="' + mine.html_url + '">Lihat log live</a>');
     } else {
       clearInterval(pollTimer); pollTimer = null;
       $("btnCancel").disabled = true;
