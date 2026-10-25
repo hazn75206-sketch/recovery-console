@@ -82,8 +82,20 @@
     </div>
   </section>
 
+  <section aria-labelledby="h-inbox-download">
+    <h2 id="h-inbox-download">3. Download ke inbox GitHub (tanpa download di HP)</h2>
+    <label for="inboxUrl">Direct download URL</label>
+    <input type="url" id="inboxUrl" autocomplete="off" inputmode="url" placeholder="https://download.example.com/game.zip">
+    <p class="hint">GitHub Actions hanya mengunduh dan menyimpan file ke branch pck-inbox—tidak menjalankan recovery. File sampai 90 MiB disimpan utuh dengan nama aslinya; file lebih besar dipecah menjadi bagian karena batas ukuran file GitHub. Gunakan URL direct download, bukan halaman web Game Jolt.</p>
+    <label for="inboxName">Nama file</label>
+    <input type="text" id="inboxName" autocomplete="off" inputmode="latin" placeholder="game.zip">
+    <div class="row">
+      <button type="button" id="btnDownloadInbox" class="primary">Download lalu simpan ke inbox</button>
+    </div>
+  </section>
+
   <section aria-labelledby="h-aksi">
-    <h2 id="h-aksi">3. Aksi (mode upload)</h2>
+    <h2 id="h-aksi">4. Aksi (mode upload)</h2>
     <div class="row">
       <button type="button" id="btnUpload">Upload file</button>
       <button type="button" id="btnRun" class="primary">Jalankan recovery</button>
@@ -96,12 +108,12 @@
   </section>
 
   <section aria-labelledby="h-status">
-    <h2 id="h-status">4. Status</h2>
+    <h2 id="h-status">5. Status</h2>
     <div id="statusBox" aria-live="polite">Menunggu. Upload file dulu, lalu jalankan recovery.</div>
   </section>
 
   <section aria-labelledby="h-hasil">
-    <h2 id="h-hasil">5. Hasil</h2>
+    <h2 id="h-hasil">6. Hasil</h2>
     <div id="resultBox">Link download muncul di sini setelah recovery hijau.</div>
   </section>
 
@@ -357,6 +369,30 @@ $("btnRunLegacy").addEventListener("click", function () {
     { pck_asset: name, pck_key: key, pck_parts: "0", inbox_branch: INBOX_BRANCH, inbox_repo: LEGACY_REPO, result_tag: RESULT_TAG },
     name.replace(/\.[^.]+$/, "")
   );
+});
+
+// Download file lewat runner GitHub lalu simpan sebagai bagian di branch inbox.
+$("btnDownloadInbox").addEventListener("click", function () {
+  if (!token()) { setStatus('<span class="err">Token belum tersedia.</span> Deploy Pages dengan secret RC_TOKEN yang valid.'); return; }
+  var url = $("inboxUrl").value.trim();
+  var name = baseName($("inboxName").value.trim() || deriveName(url));
+  if (!/^https?:\/\//i.test(url)) {
+    setStatus('<span class="err">URL tidak valid.</span> Masukkan direct download URL http(s).');
+    return;
+  }
+  if (!validGameName(name)) {
+    setStatus('<span class="err">Nama file tidak didukung.</span> Gunakan ekstensi pck, exe, apk, atau zip.');
+    return;
+  }
+  setStatus("Mengirim perintah download ke GitHub Actions...");
+  api("POST", "/actions/workflows/download-inbox.yml/dispatches", {
+    ref: REF,
+    inputs: { download_url: url, file_name: name }
+  }).then(function () {
+    setStatus('<span class="ok">Perintah download terkirim.</span> GitHub Actions akan mengunduh file dan menyimpannya ke inbox tanpa menjalankan recovery. <a href="https://github.com/' + OWNER + '/' + REPO + '/actions/workflows/download-inbox.yml">Pantau workflow Download to Inbox</a>. Setelah selesai, pilih nama file yang sama lalu tekan <b>Gunakan upload lama</b> untuk recovery dari inbox.');
+  }).catch(function (e) {
+    setStatus('<span class="err">Gagal memulai download.</span> ' + e.message);
+  });
 });
 
 $("btnRunUrl").addEventListener("click", function () {
