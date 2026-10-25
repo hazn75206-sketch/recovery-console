@@ -1,0 +1,83 @@
+name: Download to Inbox
+
+on:
+  workflow_dispatch:
+    inputs:
+      download_url:
+        description: "Direct HTTP(S) URL to the game file"
+        required: true
+        type: string
+      file_name:
+        description: "Output filename (.pck, .exe, .apk, or .zip)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Validate inputs and download on GitHub runner
+        env:
+          DOWNLOAD_URL: ${{ inputs.download_url }}
+          INPUT_NAME: ${{ inputs.file_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$DOWNLOAD_URL" != https://* && "$DOWNLOAD_URL" != http://* ]]; then
+            echo "URL must start with http:// or https://"
+            exit 1
+          fi
+          NAME="$(basename -- "$INPUT_NAME")"
+          if [[ "$NAME" != "$INPUT_NAME" || "$NAME" == "." || "$NAME" == ".." ]]; then
+            echo "Filename must not contain a directory path."
+            exit 1
+          fi
+          EXT="${NAME##*.}"
+          EXT="$(printf '%s' "$EXT" | tr '[:upper:]' '[:lower:]')"
+          case "$EXT" in
+            pck|exe|apk|zip) ;;
+            *) echo "Unsupported extension: $EXT (use pck, exe, apk, or zip)."; exit 1 ;;
+          esac
+          echo "FILE_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "Downloading $NAME on GitHub runner..."
+          curl --fail --location --show-error --retry 3 --retry-all-errors --connect-timeout 30 --max-time 7200 \
+            --output "$RUNNER_TEMP/$NAME" "$DOWNLOAD_URL"
+          test -s "$RUNNER_TEMP/$NAME"
+          ls -lh "$RUNNER_TEMP/$NAME"
+
+      - name: Prepare inbox branch with 20 MiB chunks
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Replace inbox contents and push chunks
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B pck-inbox
+          # Inbox branch is dedicated to downloaded/uploaded game files.
+          git rm -r --ignore-unmatch .
+          mkdir -p "$RUNNER_TEMP/inbox-parts"
+          split -b 20M -d -a 3 --numeric-suffixes=1 \
+            "$RUNNER_TEMP/$FILE_NAME" "$RUNNER_TEMP/inbox-parts/$FILE_NAME.part"
+          cp "$RUNNER_TEMP/inbox-parts/"* .
+          echo "Prepared inbox chunks:"
+          ls -lh
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No inbox changes to commit."
+            exit 1
+          fi
+          git commit -m "inbox: download $FILE_NAME"
+          git push origin HEAD:pck-inbox --force
+          echo "Download finished. File is stored as 20 MiB parts in branch pck-inbox."
