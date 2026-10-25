@@ -64,7 +64,7 @@ jobs:
         run: |
           set -euo pipefail
           export LC_ALL=C
-          MAX_MIB=1800
+          MAX_MIB=3500
           mkdir -p "$RUNNER_TEMP/dl"
           OUT="$RUNNER_TEMP/dl/$FILE_NAME"
           echo "Mengunduh $FILE_NAME di runner GitHub (HP tidak ikut mengunduh)..."
@@ -96,7 +96,7 @@ jobs:
             exit 1
           fi
           if (( SIZE > MAX_MIB * 1024 * 1024 )); then
-            echo "::error::File $((SIZE / 1048576)) MiB melebihi batas ${MAX_MIB} MiB (batas ukuran push GitHub)."
+            echo "::error::File $((SIZE / 1048576)) MiB melebihi batas ${MAX_MIB} MiB (batas workflow ini; repo GitHub makin berat di atas beberapa GB)."
             exit 1
           fi
 
@@ -141,10 +141,14 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          TMP_BRANCH=pck-inbox-new
+          BATCH_PARTS="${BATCH_PARTS:-40}"   # 40 x 20 MiB = 800 MiB per push (batas satu push GitHub ~2 GiB)
+
           # Branch inbox dibuat yatim (tanpa riwayat main dan tanpa file workflow)
           # supaya hanya berisi file unduhan.
-          git checkout --orphan pck-inbox
+          git checkout --orphan "$TMP_BRANCH"
           git rm -rf --quiet --ignore-unmatch .
+          git push --quiet origin --delete "$TMP_BRANCH" 2>/dev/null || true   # sisa run yang gagal
 
           if (( FILE_SIZE <= INTACT_MAX )); then
             cp -- "$SRC" "./$FILE_NAME"
@@ -166,16 +170,26 @@ jobs:
               echo "::error::Sambungan bagian tidak identik dengan file asli."
               exit 1
             fi
-            echo "Disimpan sebagai $EXPECT_PARTS bagian 20 MiB (batas file GitHub)."
+            echo "Dipecah menjadi $EXPECT_PARTS bagian 20 MiB (batas file GitHub)."
           fi
+          rm -f -- "$SRC"   # hemat disk runner
 
-          git add -A
-          if git diff --cached --quiet; then
-            echo "::error::Tidak ada perubahan untuk di-commit."
-            exit 1
-          fi
-          git commit --quiet -m "inbox: download $FILE_NAME"
-          git push --force origin pck-inbox
+          # Dorong bertahap ke branch sementara; satu push dibatasi ukurannya oleh GitHub.
+          mapfile -t FILES < <(ls -1A | grep -v '^\.git$' | LC_ALL=C sort)
+          TOTAL=${#FILES[@]}
+          i=0; N=0
+          while (( i < TOTAL )); do
+            N=$((N + 1))
+            git add -- "${FILES[@]:i:BATCH_PARTS}"
+            git commit --quiet -m "inbox: download $FILE_NAME (tahap $N)"
+            git push --quiet --force origin "HEAD:refs/heads/$TMP_BRANCH"
+            echo "Tahap $N terkirim ($(( i + BATCH_PARTS > TOTAL ? TOTAL : i + BATCH_PARTS ))/$TOTAL file)."
+            i=$((i + BATCH_PARTS))
+          done
+
+          # Pindahkan pck-inbox ke commit akhir (objek sudah ada di GitHub, jadi cepat).
+          git push --force origin "HEAD:refs/heads/pck-inbox"
+          git push --quiet origin --delete "$TMP_BRANCH" || true
 
           # File baru dianggap tersimpan hanya jika branch remote benar-benar menunjuk commit ini.
           LOCAL="$(git rev-parse HEAD)"
