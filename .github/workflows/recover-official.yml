@@ -34,6 +34,11 @@ on:
         default: "hasil-recovery"
         required: false
         type: string
+      gdre_version:
+        description: "Versi GDRE Tools (tag release GDRETools/gdsdecomp)"
+        default: "v2.8.0-beta.2"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -49,7 +54,8 @@ jobs:
         shell: bash
         run: |
           set -e
-          gh release download v2.7.0 -R GDRETools/gdsdecomp -p "GDRE_tools-v2.7.0-windows.zip" -O official.zip
+          GDRE_VER='${{ inputs.gdre_version }}'
+          gh release download "$GDRE_VER" -R GDRETools/gdsdecomp -p "GDRE_tools-$GDRE_VER-windows.zip" -O official.zip
           mkdir -p gdre-bin
           7z x official.zip -ogdre-bin/ > /dev/null
           echo "BIN=$(ls gdre-bin/*.exe | head -1)"
