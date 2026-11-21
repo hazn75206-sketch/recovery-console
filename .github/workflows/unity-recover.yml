@@ -99,11 +99,15 @@ jobs:
           tar -xf ar.tar.xz
           chmod +x AssetRipper.GUI.Free
           (nohup ./AssetRipper.GUI.Free --headless --port 18089 > ar-web.log 2>&1 &)
-          for i in $(seq 1 30); do
-            grep -q "Now listening" ar-web.log && break
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://127.0.0.1:18089/; then break; fi
             sleep 5
           done
-          grep -q "Now listening" ar-web.log
+          if ! curl -s -o /dev/null http://127.0.0.1:18089/; then
+            echo "AssetRipper gagal start. Log:"
+            cat ar-web.log || true
+            exit 1
+          fi
           GAME='${{ inputs.apk_base }}'
           SRC="$GITHUB_WORKSPACE/$GAME"
           if [[ "$GAME" == *.xapk ]]; then
